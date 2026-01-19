@@ -1,3 +1,2 @@
-# TerrorLink
-The releases for TerrorLink
-The app is close sourced so you will not find any code in this repository, simply navigate to releases to download the app.
+TerrorLink Releases
+This repository hosts the releases for TerrorLink. As the application is closed-source, no source code is available here. Please visit the releases section to download the app.
