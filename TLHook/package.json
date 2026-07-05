@@ -1,0 +1,10 @@
+{
+  "name": "tlhook",
+  "version": "1.0.0",
+  "description": "Low-level keyboard hook for TerrorLink overlay.",
+  "main": "src/index.js",
+  "gypfile": true,
+  "dependencies": {
+    "node-addon-api": "^7.0.0"
+  }
+}

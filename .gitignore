@@ -1,0 +1,11 @@
+b.txt
+.github/copilot-instructions.md
+a.txt
+node_modules/
+terrorlink-client/node_modules/
+terrorlink-server/node_modules/
+dist/
+*.log
+build/
+.agents/
+changelog.txt

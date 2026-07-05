@@ -1,0 +1,25 @@
+Twemoji is fully owned by Twitter, we claim 0 rights to these assets.
+All credits go to Twitter.
+
+─────────────────────────────────────────────
+
+Cloudflared (cloudflared-windows-amd64.exe)
+Copyright (c) Cloudflare, Inc.
+Licensed under the Apache License, Version 2.0.
+Full license text: licenses/CLOUDFLARED-LICENSE.txt
+Source: https://github.com/cloudflare/cloudflared
+
+─────────────────────────────────────────────
+
+Electron
+Copyright (c) Electron contributors
+Copyright (c) GitHub, Inc.
+Licensed under the MIT License.
+Source: https://github.com/electron/electron
+
+─────────────────────────────────────────────
+
+Node.js
+Copyright (c) Node.js contributors
+Licensed under the MIT License.
+Source: https://github.com/nodejs/node

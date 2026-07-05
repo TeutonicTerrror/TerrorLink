@@ -1,0 +1,100 @@
+/* Default theme (purple) */
+:root{
+  --bg: #32124b; 
+  --panel: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(0,0,0,0.06));
+  --item-hover: rgba(255,255,255,0.06);
+  --accent: #7b4ef0;
+  --text: #f3eefe;
+  --muted: rgba(255,255,255,0.6);
+  --danger: #ff6b6b;
+  --menu-bg: rgba(50,18,75,0.62);
+  --menu-border: rgba(255,255,255,0.04);
+  --hover-bg: rgba(123,78,240,0.10);
+}
+
+/* Shockwire theme (yellow/black) */
+[data-theme="shockwire"] {
+  --bg: #111111;
+  --accent: #ffd86b;
+  --text: #fff8e6;
+  --muted: #d9c88a;
+  --menu-bg: rgba(6,6,6,0.92);
+  --menu-border: rgba(255,205,44,0.14);
+  --hover-bg: rgba(255,216,107,0.10);
+}
+
+/* RoyalChain theme (blue/gold) */
+[data-theme="royalchain"] {
+  --bg: #0f234a;
+  --accent: #ffd27a;
+  --text: #fff9ee;
+  --muted: #c9b892;
+  --menu-bg: rgba(6,9,25,0.92);
+  --menu-border: rgba(200,170,90,0.14);
+  --hover-bg: rgba(106,161,255,0.10);
+}
+
+/* BloodLink theme (red/dark) */
+[data-theme="bloodlink"] {
+  --bg: #1f0505;
+  --accent: #ff4d4d;
+  --text: #fff6f6;
+  --muted: #d6a6a6;
+  --menu-bg: rgba(12,6,8,0.92);
+  --menu-border: rgba(200,40,40,0.12);
+  --hover-bg: rgba(255,77,77,0.10);
+}
+
+/* RosePetal theme (pink/dark) */
+[data-theme="rosepetal"] {
+  --bg: #2a0a1f;
+  --accent: #ff69b4;
+  --text: #fff5fa;
+  --muted: #e8b3d1;
+  --menu-bg: rgba(18,8,15,0.92);
+  --menu-border: rgba(255,105,180,0.3);
+  --hover-bg: rgba(255,105,180,0.10);
+}
+
+/* ToxicReactor theme (toxic green) */
+[data-theme="toxicreactor"] {
+  --bg: #10180f;
+  --accent: #8dd66a;
+  --text: #ebf9e6;
+  --muted: #a9c49f;
+  --menu-bg: rgba(10,16,10,0.92);
+  --menu-border: rgba(141,214,106,0.24);
+  --hover-bg: rgba(141,214,106,0.12);
+}
+
+[data-theme="toxicreactor"] .menu{
+  background:
+    linear-gradient(165deg, rgba(188,245,150,0.08) 0%, rgba(18,28,15,0.22) 38%, rgba(9,14,8,0.94) 100%),
+    var(--menu-bg);
+  border-color: rgba(141,214,106,0.28);
+  box-shadow: 0 10px 26px rgba(0,0,0,0.5), 0 0 20px rgba(141,214,106,0.12), inset 0 1px 0 rgba(235,255,221,0.08);
+}
+
+[data-theme="toxicreactor"] .item:hover{
+  background: linear-gradient(100deg, rgba(170,235,130,0.2), rgba(141,214,106,0.1) 45%, rgba(255,255,255,0.03));
+  box-shadow: 0 8px 18px rgba(0,0,0,0.35), inset 0 1px 0 rgba(228,255,209,0.08);
+}
+
+html,body{height:100%;margin:0;padding:0;font-family:Segoe UI, system-ui, -apple-system, 'Segoe UI Emoji';background:transparent;overflow:hidden}
+.menu{width:300px;background:var(--menu-bg);color:var(--text);border-radius:18px;padding:8px;box-shadow:0 8px 22px rgba(10,6,24,0.55);backdrop-filter: blur(18px) saturate(130%);-webkit-backdrop-filter: blur(18px) saturate(130%);border:1px solid var(--menu-border);overflow:hidden}
+.menu-header{display:flex;align-items:center;gap:10px;padding:6px 8px 8px 8px}
+.app-icon{width:28px;height:28px;border-radius:6px;flex:0 0 28px}
+.menu-title{font-weight:600;color:var(--text);font-size:14px}
+.menu-body{display:flex;flex-direction:column;gap:8px;padding:6px 6px 12px 6px;overflow:hidden}
+.item{padding:10px 12px;border-radius:12px;cursor:pointer;user-select:none;color:var(--text);display:flex;align-items:center}
+.item .label{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.item:hover{background:linear-gradient(90deg, var(--hover-bg), rgba(255,255,255,0.02));transform:translateY(-1px);box-shadow:0 6px 20px rgba(11,4,34,0.38)}
+.item:active{transform:translateY(0);opacity:0.95}
+.item.active{color:var(--accent)}
+.divider{height:1px;background:var(--menu-border);margin:4px 0;border-radius:2px}
+.danger{color:var(--danger);font-weight:600}
+.item.danger:hover{background:linear-gradient(90deg, rgba(255,107,107,0.10), rgba(255,255,255,0.02));color:#fff}
+.item{font-size:13px}
+body, .menu, .menu-body { -ms-overflow-style: none; scrollbar-width: none; }
+.menu::-webkit-scrollbar, .menu-body::-webkit-scrollbar { display: none; }
+html, body { border-radius: 18px; overflow: hidden; }

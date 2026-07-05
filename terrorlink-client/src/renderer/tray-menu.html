@@ -1,0 +1,85 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="tray.css">
+  <title>TerrorLink Tray</title>
+</head>
+<body>
+  <div class="menu" role="menu">
+    <div class="menu-header">
+      <img class="app-icon" src="tray_icon.png" alt="TerrorLink">
+      <div class="menu-title">TerrorLink</div>
+    </div>
+    <div class="menu-body">
+      <div class="item" id="show" role="menuitem"><span class="label">Show TerrorLink</span></div>
+      <div class="item" id="host" role="menuitem"><span class="label">Host → Start</span></div>
+      <div class="divider" role="separator"></div>
+      <div class="item" id="settings" role="menuitem"><span class="label">Settings</span></div>
+      <div class="divider" role="separator"></div>
+      <div class="item danger" id="quit" role="menuitem"><span class="label">Close TerrorLink</span></div>
+    </div>
+  </div>
+
+  <script>
+    const byId = (id) => document.getElementById(id);
+    const hide = () => { try { if (window.trayAPI && window.trayAPI.hideMenu) window.trayAPI.hideMenu(); } catch (e) {} };
+
+    function applyTheme(theme, iconPath) {
+      const safe = (theme && typeof theme === 'string') ? theme.toLowerCase() : 'default';
+      if (!safe || safe === 'default') {
+        document.documentElement.removeAttribute('data-theme');
+      } else {
+        document.documentElement.setAttribute('data-theme', safe);
+      }
+      const appIcon = document.querySelector('.app-icon');
+      if (appIcon && iconPath) {
+        appIcon.src = iconPath;
+      } else if (appIcon && (!safe || safe === 'default')) {
+        appIcon.src = 'tray_icon.png';
+      }
+    }
+
+    function updateState(state) {
+      try {
+        if (state && (state.theme !== undefined || state.iconPath !== undefined)) {
+          applyTheme(state.theme, state.iconPath);
+        }
+        const showEl = byId('show');
+        const hostEl = byId('host');
+        if (showEl) showEl.querySelector('.label').textContent = state && state.windowVisible ? 'Hide TerrorLink' : 'Show TerrorLink';
+        if (hostEl) hostEl.querySelector('.label').textContent = state && state.hostRunning ? 'Host → Stop' : 'Host → Start';
+        if (hostEl) {
+          if (state && state.hostRunning) hostEl.classList.add('active'); else hostEl.classList.remove('active');
+        }
+      } catch (e) {}
+    }
+
+    try { if (window.trayAPI && window.trayAPI.onState) window.trayAPI.onState(updateState); } catch (e) {}
+
+    byId('show').addEventListener('click', async () => {
+      try { if (window.trayAPI && window.trayAPI.toggleWindow) { await window.trayAPI.toggleWindow(); } } catch (e) {}
+      hide();
+    });
+
+    byId('host').addEventListener('click', async () => {
+      try { if (window.trayAPI && window.trayAPI.hostToggle) { await window.trayAPI.hostToggle(); } } catch (e) {}
+      hide();
+    });
+
+    byId('settings').addEventListener('click', async () => {
+      try { if (window.trayAPI && window.trayAPI.openSettings) { await window.trayAPI.openSettings(); } } catch (e) {}
+      hide();
+    });
+
+    byId('quit').addEventListener('click', async () => {
+      try { if (window.trayAPI && window.trayAPI.hideMenu) { await window.trayAPI.hideMenu(); } } catch (e) {}
+      try { if (window.trayAPI && window.trayAPI.quit) { await window.trayAPI.quit(); } } catch (e) {}
+    });
+
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') window.close(); });
+  </script>
+</body>
+</html>

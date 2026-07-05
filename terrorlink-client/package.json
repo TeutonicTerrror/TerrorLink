@@ -1,0 +1,88 @@
+{
+  "name": "terrorlink-client",
+  "version": "1.0.13",
+  "description": "TerrorLink chat client",
+  "license": "GPL-3.0-or-later",
+  "author": "TerrorLink",
+  "main": "src/main/main.js",
+  "scripts": {
+    "build:css": "tailwindcss -i ./src/renderer/input.css -o ./tailwind.css --minify",
+    "predist": "npm run build:css",
+    "start": "node -e \"const fs=require('fs');const cp=require('child_process');const css='tailwind.css';const src='src/renderer/input.css';const need=!fs.existsSync(css)||fs.statSync(css).mtimeMs<fs.statSync(src).mtimeMs;if(need)cp.execSync('npm run build:css',{stdio:'inherit'});\" && electron .",
+    "clean-dist": "rd /s /q dist",
+    "make-icons": "node ./build/make-icons.js",
+    "dist": "electron-builder --win --x64",
+    "dist:portable": "electron-builder --win portable"
+  },
+  "devDependencies": {
+    "@vercel/ncc": "^0.34.0",
+    "autoprefixer": "^10.0.0",
+    "electron": "^25.0.0",
+    "electron-builder": "^24.6.0",
+    "postcss": "^8.0.0",
+    "tailwindcss": "^4.0.0"
+  },
+  "dependencies": {
+    "electron-updater": "^6.6.2",
+    "localtunnel": "^2.0.2",
+    "node-gyp-build": "^4.6.0",
+    "unicode-emoji-json": "^0.8.0"
+  },
+  "build": {
+    "appId": "com.terrorlink.client",
+    "productName": "TerrorLink Chat",
+    "artifactName": "TerrorLink.Chat.exe",
+    "publish": {
+      "provider": "github",
+      "owner": "TeutonicTerrror",
+      "repo": "TerrorLink"
+    },
+    "files": [
+      "**/*",
+      "!node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}"
+    ],
+    "asar": false,
+    "extraResources": [
+      "assets/cloudflared-windows-amd64.exe",
+      "assets/icons/terrorLinkicon_YellowPreset.ico",
+      "assets/icons/terrorLinkicon_BlueGoldPreset.ico",
+      "assets/icons/terrorLinkicon_RedPreset.ico",
+      {
+        "from": "../TLHook",
+        "to": "TLHook",
+        "filter": [
+          "src/index.js",
+          "package.json",
+          "build/Release/TLHook.node"
+        ]
+      },
+      {
+        "from": "terrorlink-server",
+        "to": "terrorlink-server",
+        "filter": [
+          "server.ncc.js",
+          "server.bundle.js",
+          "server.js",
+          "package.json"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "requestedExecutionLevel": "asInvoker",
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "TerrorLink Chat"
+    }
+  }
+}
