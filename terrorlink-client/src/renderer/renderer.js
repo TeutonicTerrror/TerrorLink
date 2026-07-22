@@ -62,7 +62,8 @@ const EMOJI_SHORTCODES = [
   { key: 'exclamation', emoji: '❗', aliases: ['alert'] },
   { key: 'eyes_closed', emoji: '😌', aliases: ['relief'] },
   { key: 'pensive', emoji: '😔', aliases: ['down'] },
-  { key: 'smirk', emoji: '😏', aliases: ['sly'] }
+  { key: 'smirk', emoji: '😏', aliases: ['sly'] },
+  { key: 'v', emoji: '✌️', aliases: ['victory', 'peace', 'v_sign'] }
 ];
 const SHORTCODE_INDEX = (() => {
   const byKey = new Map();
@@ -87,6 +88,83 @@ const SHORTCODE_INDEX = (() => {
   });
   return { byKey, byAlias, bySlug };
 })();
+const EMOJI_TO_SHORTCODE = (() => {
+  const map = new Map();
+  EMOJI_SHORTCODES.forEach((entry) => {
+    if (!map.has(entry.emoji)) map.set(entry.emoji, ':' + entry.key + ':');
+  });
+  EMOJI_DATA.forEach((e) => {
+    if (!map.has(e.char)) {
+      const slugNorm = (e.slug || '').replace(/^e_\d+_\d+_/, '');
+      if (slugNorm) map.set(e.char, ':' + slugNorm + ':');
+    }
+  });
+  return map;
+})();
+function emojiToCodepoint(char) {
+  if (!char || !char.length) return '';
+  var cp = '';
+  for (var i = 0; i < char.length; i++) {
+    var c = char.codePointAt(i);
+    if (c > 0xFFFF) i++;
+    if (cp) cp += '-';
+    cp += c.toString(16);
+  }
+  return cp;
+}
+var EMOJI_CP_CACHE = {};
+var EMOJI_REGEX = /(?:\p{Emoji_Modifier_Base}\p{Emoji_Modifier}?|\p{Emoji_Presentation}|\p{Emoji}\uFE0F?)(?:\u200D(?:\p{Emoji_Modifier_Base}\p{Emoji_Modifier}?|\p{Emoji_Presentation}|\p{Emoji}\uFE0F?))*/gu;
+function processCustomEmoji(node, urlBuilder) {
+  try {
+    if (!node || !node.querySelectorAll) return;
+    var imgClass = 'twemoji-emoji';
+    var walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT, null, false);
+    var textNodes = [];
+    while (walker.nextNode()) textNodes.push(walker.currentNode);
+    for (var i = 0; i < textNodes.length; i++) {
+      var textNode = textNodes[i];
+      var parent = textNode.parentNode;
+      if (!parent) continue;
+      var text = textNode.textContent || '';
+      if (!text) continue;
+      EMOJI_REGEX.lastIndex = 0;
+      var match;
+      var lastIdx = 0;
+      var frag = document.createDocumentFragment();
+      var hasMatch = false;
+      while ((match = EMOJI_REGEX.exec(text)) !== null) {
+        hasMatch = true;
+        if (match.index > lastIdx) {
+          frag.appendChild(document.createTextNode(text.slice(lastIdx, match.index)));
+        }
+        var emoji = match[0];
+        var cp = EMOJI_CP_CACHE[emoji] || (EMOJI_CP_CACHE[emoji] = emojiToCodepoint(emoji));
+        var url = urlBuilder(cp, emoji);
+        var img = document.createElement('img');
+        img.className = imgClass;
+        img.src = url;
+        img.alt = emoji;
+        var sc = EMOJI_TO_SHORTCODE.get(emoji);
+        if (sc) img.setAttribute('data-shortcode', sc);
+        frag.appendChild(img);
+        lastIdx = match.index + emoji.length;
+      }
+      if (hasMatch) {
+        if (lastIdx < text.length) {
+          frag.appendChild(document.createTextNode(text.slice(lastIdx)));
+        }
+        if (parent && parent.replaceChild) {
+          parent.replaceChild(frag, textNode);
+        }
+      }
+    }
+  } catch (e) {}
+}
+function processNotoEmoji(node) {
+  processCustomEmoji(node, function(cp) {
+    return 'https://cdn.jsdelivr.net/gh/googlefonts/noto-emoji@main/svg/emoji_u' + cp.toLowerCase() + '.svg';
+  });
+}
 const getGiphyApiKey = () => (typeof settings === 'object' && settings && settings.giphyApiKey) ? settings.giphyApiKey.trim() : _resolveMediaBlob();
 const GIPHY_SEARCH_URL = (term) => `https://api.giphy.com/v1/gifs/search?api_key=${encodeURIComponent(getGiphyApiKey())}&q=${encodeURIComponent(term)}&limit=${GIPHY_LIMIT}`;
 const GIPHY_MEDIA_PRIORITY = ['fixed_height', 'original', 'fixed_width', 'downsized'];
@@ -387,6 +465,21 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       }
     });
+    messagesEl.addEventListener('copy', function(e) {
+      try {
+        var sel = window.getSelection();
+        if (!sel || !sel.rangeCount) return;
+        var frag = sel.getRangeAt(0).cloneContents();
+        var imgs = frag.querySelectorAll('img.twemoji-emoji');
+        for (var i = imgs.length - 1; i >= 0; i--) {
+          var sc = imgs[i].getAttribute('data-shortcode') || imgs[i].getAttribute('alt') || '';
+          imgs[i].replaceWith(document.createTextNode(sc));
+        }
+        var text = frag.textContent || '';
+        e.clipboardData.setData('text/plain', text);
+        e.preventDefault();
+      } catch (err) {}
+    });
   }
   const pinnedBanner = document.getElementById('pinnedBanner');
   const pinnedBannerContent = document.getElementById('pinnedBannerContent');
@@ -561,7 +654,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const defaultKeybinds = { focusKey: '/', toggleKey: ']', hostPanelKey: 'Control+H', copyInviteKey: 'Control+I', hostToggleKey: 'Control+Shift+H', settingsKey: 'Control+Shift+S' };
   let keybinds = { ...defaultKeybinds };
   const SETTINGS_STORAGE_KEY = 'terrorlink_settings';
-  const defaultSettings = { playMentionWhenHidden: true, theme: 'default', bgOpacity: 92, bgBlur: 0, spamFilter: true, trueOverlay: false, enableDebugLogging: false, giphyApiKey: '' };
+  const defaultSettings = { playMentionWhenHidden: true, theme: 'default', bgOpacity: 92, bgBlur: 0, spamFilter: true, trueOverlay: false, enableDebugLogging: false, giphyApiKey: '', emojiSet: 'system' };
   let settings = { ...defaultSettings };
   let intentionalDisconnect = false;
   let reconnectAttempts = 0;
@@ -741,6 +834,58 @@ document.addEventListener('DOMContentLoaded', () => {
   let isOverlayVisible = true; 
   let currentMessageId = null;
 
+  function processTwemoji(node) {
+    try {
+      if (typeof twemoji === 'undefined') return;
+      twemoji.parse(node, { folder: 'svg', ext: '.svg', className: 'twemoji-emoji' });
+      var imgs = node.querySelectorAll ? node.querySelectorAll('img.twemoji-emoji') : [];
+      for (var i = 0; i < imgs.length; i++) {
+        var alt = imgs[i].getAttribute('alt');
+        if (alt && EMOJI_TO_SHORTCODE.has(alt)) {
+          imgs[i].setAttribute('data-shortcode', EMOJI_TO_SHORTCODE.get(alt));
+        }
+      }
+    } catch (e) {}
+  }
+
+  function unprocessTwemoji(node) {
+    try {
+      var imgs = node.querySelectorAll ? node.querySelectorAll('img.twemoji-emoji') : [];
+      for (var i = imgs.length - 1; i >= 0; i--) {
+        imgs[i].replaceWith(document.createTextNode(imgs[i].getAttribute('alt') || ''));
+      }
+    } catch (e) {}
+  }
+
+  function getEmojiProcessor() {
+    var val = settings.emojiSet || 'system';
+    if (val === 'twemoji') return processTwemoji;
+    if (val === 'noto') return processNotoEmoji;
+    return null;
+  }
+
+  function applyEmojiSet() {
+    var val = settings.emojiSet || 'system';
+    var processor;
+    if (val === 'twemoji') processor = processTwemoji;
+    else if (val === 'noto') processor = processNotoEmoji;
+    else processor = null;
+    var bubbles = messagesEl ? messagesEl.querySelectorAll('.content') : [];
+    var reactionEls = messagesEl ? messagesEl.querySelectorAll('.reactions') : [];
+    var reactBtns = document.querySelectorAll('.react-btn');
+    var singles = [emojiGrid, reactionsGrid, emojiBtn, pollBtn, attachBtn, emojiHint];
+    for (var i = 0; i < bubbles.length; i++) unprocessTwemoji(bubbles[i]);
+    for (var i = 0; i < reactionEls.length; i++) unprocessTwemoji(reactionEls[i]);
+    for (var i = 0; i < reactBtns.length; i++) unprocessTwemoji(reactBtns[i]);
+    for (var i = 0; i < singles.length; i++) { if (singles[i]) unprocessTwemoji(singles[i]); }
+    if (processor) {
+      for (var i = 0; i < bubbles.length; i++) processor(bubbles[i]);
+      for (var i = 0; i < reactionEls.length; i++) processor(reactionEls[i]);
+      for (var i = 0; i < reactBtns.length; i++) processor(reactBtns[i]);
+      for (var i = 0; i < singles.length; i++) { if (singles[i]) processor(singles[i]); }
+    }
+  }
+
   function simpleHash(str = '') {
     let hash = 0;
     for (let i = 0; i < str.length; i++) {
@@ -809,6 +954,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
   } catch (e) { settings = { ...defaultSettings }; }
+  try { applyEmojiSet(); } catch (e) {}
   try { const cb = document.getElementById('playMentionHidden'); if (cb) cb.checked = !!settings.playMentionWhenHidden; } catch (e) {}
   
   try { 
@@ -1419,6 +1565,7 @@ document.addEventListener('DOMContentLoaded', () => {
       fragment.appendChild(btn);
     });
     emojiGrid.appendChild(fragment);
+    var _ep = getEmojiProcessor(); if (_ep) _ep(emojiGrid);
   }
 
   function toggleEmojiPanel(force) {
@@ -1483,6 +1630,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const escaped = message.replace(/</g, '&lt;').replace(/>/g, '&gt;');
     emojiHint.innerHTML = `<span class="hint-emoji">🏷️</span> ${escaped}`;
     emojiHint.classList.remove('hidden');
+    var _ep = getEmojiProcessor(); if (_ep) _ep(emojiHint);
     slashHintActive = true;
     return true;
   }
@@ -1647,8 +1795,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     emojiSuggestion = { start: tokenInfo.start, end: tokenInfo.end, emoji: entry.emoji, code: entry.key };
     if (emojiHint) {
-      emojiHint.innerHTML = `<span class="hint-emoji">${entry.emoji}</span> :${entry.key}: -- press Tab/Enter to insert`;
-      emojiHint.classList.remove('hidden');
+    emojiHint.innerHTML = `<span class="hint-emoji">${entry.emoji}</span> :${entry.key}: -- press Tab/Enter to insert`;
+    emojiHint.classList.remove('hidden');
+    var _ep = getEmojiProcessor(); if (_ep) _ep(emojiHint);
     }
   }
 
@@ -2340,6 +2489,7 @@ document.addEventListener('DOMContentLoaded', () => {
         fragment.appendChild(btns[index]);
       }
       reactionsGrid.appendChild(fragment);
+    var _ep = getEmojiProcessor(); if (_ep) _ep(reactionsGrid);
       if (index < btns.length) {
         if (typeof window.requestAnimationFrame === 'function') {
           window.requestAnimationFrame(appendBatch);
@@ -4012,6 +4162,7 @@ function addMessage(rawMsg, scroll = true) {
           showReactionPanel(rawMsg.id, reactBtn);
         });
         meta.appendChild(reactBtn);
+var _ep = getEmojiProcessor(); if (_ep) _ep(reactBtn);
       }
       bubble.appendChild(meta);
     }
@@ -4025,11 +4176,13 @@ function addMessage(rawMsg, scroll = true) {
       content.className = 'content';
       content.innerHTML = normalized.rrHtml;
       bubble.appendChild(content);
+      var _ep = getEmojiProcessor(); if (_ep) _ep(content);
     } else if (normalized.__html) {
       const content = document.createElement('div');
       content.className = 'content';
       content.innerHTML = normalized.text || '';
       bubble.appendChild(content);
+      var _ep = getEmojiProcessor(); if (_ep) _ep(content);
     } else if (normalized.text) {
       const content = document.createElement('div');
       content.className = 'content';
@@ -4037,6 +4190,7 @@ function addMessage(rawMsg, scroll = true) {
       bindSpoilerToggles(content);
       decorateMentions(content);
       bubble.appendChild(content);
+      var _ep = getEmojiProcessor(); if (_ep) _ep(content);
       
       const ytMatch = normalized.text.match(/(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/watch\?v=|youtube\.com\/embed\/|youtu\.be\/|youtube\.com\/v\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})/i);
       if (ytMatch) {
@@ -4096,6 +4250,7 @@ function addMessage(rawMsg, scroll = true) {
         }
       });
       bubble.appendChild(reactionsDiv);
+      var _ep = getEmojiProcessor(); if (_ep) _ep(reactionsDiv);
     }
 
     if (mentionTargets.length) {
@@ -5483,7 +5638,6 @@ function addMessage(rawMsg, scroll = true) {
       if (gifModalVisible) closeGifModal();
       if (pollModalVisible) closePollModal();
       if (notesModal && !notesModal.classList.contains('hidden')) notesModal.classList.add('hidden');
-      if (detailsVisible === false) setDetailsVisible(true);
       if (active !== textEl) {
         textEl.focus();
         const cursor = typeof textEl.selectionStart === 'number' ? textEl.selectionStart : textEl.value.length;
@@ -5530,6 +5684,18 @@ function addMessage(rawMsg, scroll = true) {
             applyBgOpacity(settings.bgOpacity);
             saveSettingsToStorage();
           }
+        },
+        {
+          key: 'emojiSet',
+          type: 'select',
+          label: 'Emoji Set',
+          description: 'Choose which emoji style to display in messages.',
+          options: [
+            { value: 'system', label: 'System Default' },
+            { value: 'twemoji', label: 'Twemoji' },
+            { value: 'noto', label: 'Noto' }
+          ],
+          onChange: (val) => { settings.emojiSet = val; applyEmojiSet(); saveSettingsToStorage(); }
         },
         {
           key: 'bgOpacity',
@@ -5735,7 +5901,7 @@ function addMessage(rawMsg, scroll = true) {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'btn keybind-btn keybind-label';
-      btn.textContent = String(currentValue || '').trim() || '?';
+      btn.textContent = String(currentValue || '').trim() || 'Disabled';
       btn.title = `${controlLabel}: ${btn.textContent}`;
       btn.addEventListener('click', () => {
         btn.textContent = 'Press key... (Esc to cancel)';
@@ -5754,6 +5920,12 @@ function addMessage(rawMsg, scroll = true) {
           if (e.key === 'Escape') {
             doneCapturing();
             finishCapture(btn, null, null);
+            return;
+          }
+          if (e.key === ' ') {
+            if (_keyCapTimer) { clearTimeout(_keyCapTimer); _keyCapTimer = null; }
+            doneCapturing();
+            finishCapture(btn, 'Space', ' ');
             return;
           }
           var modifierKeys = {Control:1,Shift:1,Alt:1,Meta:1};
@@ -6005,6 +6177,17 @@ function addMessage(rawMsg, scroll = true) {
       if (e.key === 'Escape') {
         if (window._keyCapTimerV2) { clearTimeout(window._keyCapTimerV2); window._keyCapTimerV2 = null; }
         finishCapture(targetBtn, null, false);
+        window.removeEventListener('keydown', onKey, true);
+        return;
+      }
+      if (e.key === ' ') {
+        if (window._keyCapTimerV2) { clearTimeout(window._keyCapTimerV2); window._keyCapTimerV2 = null; }
+        keybinds[keyCaptureTarget] = '';
+        if (targetBtn) {
+          targetBtn.textContent = 'Disabled';
+          targetBtn.title = (keyCaptureTarget === 'focusKey' ? 'Focus chat' : 'Toggle overlay') + ': Disabled';
+        }
+        saveKeybinds();
         window.removeEventListener('keydown', onKey, true);
         return;
       }
@@ -7175,8 +7358,8 @@ function addMessage(rawMsg, scroll = true) {
   if (toggleKeyBtn) toggleKeyBtn.addEventListener('click', (e) => beginCapture(toggleKeyBtn, 'toggleKey'));
     if (settingsResetBtn) settingsResetBtn.addEventListener('click', () => {
     keybinds = { ...defaultKeybinds };
-    if (focusKeyBtn) { focusKeyBtn.textContent = keybinds.focusKey; focusKeyBtn.title = `Focus chat: ${keybinds.focusKey}`; }
-    if (toggleKeyBtn) { toggleKeyBtn.textContent = keybinds.toggleKey; toggleKeyBtn.title = `Toggle overlay: ${keybinds.toggleKey}`; }
+    if (focusKeyBtn) { focusKeyBtn.textContent = keybinds.focusKey || 'Disabled'; focusKeyBtn.title = `Focus chat: ${keybinds.focusKey}`; }
+    if (toggleKeyBtn) { toggleKeyBtn.textContent = keybinds.toggleKey || 'Disabled'; toggleKeyBtn.title = `Toggle overlay: ${keybinds.toggleKey}`; }
       settings = { ...defaultSettings };
       try { const cb = document.getElementById('playMentionHidden'); if (cb) cb.checked = !!settings.playMentionWhenHidden; } catch (e) {}
       try { const spamFilter = document.getElementById('spamFilterToggle'); if (spamFilter) spamFilter.checked = settings.spamFilter !== false; } catch (e) {}
