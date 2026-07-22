@@ -62,7 +62,8 @@ const EMOJI_SHORTCODES = [
   { key: 'exclamation', emoji: '❗', aliases: ['alert'] },
   { key: 'eyes_closed', emoji: '😌', aliases: ['relief'] },
   { key: 'pensive', emoji: '😔', aliases: ['down'] },
-  { key: 'smirk', emoji: '😏', aliases: ['sly'] }
+  { key: 'smirk', emoji: '😏', aliases: ['sly'] },
+  { key: 'v', emoji: '✌️', aliases: ['victory', 'peace', 'v_sign'] }
 ];
 const SHORTCODE_INDEX = (() => {
   const byKey = new Map();
@@ -5483,7 +5484,6 @@ function addMessage(rawMsg, scroll = true) {
       if (gifModalVisible) closeGifModal();
       if (pollModalVisible) closePollModal();
       if (notesModal && !notesModal.classList.contains('hidden')) notesModal.classList.add('hidden');
-      if (detailsVisible === false) setDetailsVisible(true);
       if (active !== textEl) {
         textEl.focus();
         const cursor = typeof textEl.selectionStart === 'number' ? textEl.selectionStart : textEl.value.length;
@@ -5735,7 +5735,7 @@ function addMessage(rawMsg, scroll = true) {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'btn keybind-btn keybind-label';
-      btn.textContent = String(currentValue || '').trim() || '?';
+      btn.textContent = String(currentValue || '').trim() || 'Disabled';
       btn.title = `${controlLabel}: ${btn.textContent}`;
       btn.addEventListener('click', () => {
         btn.textContent = 'Press key... (Esc to cancel)';
@@ -5754,6 +5754,12 @@ function addMessage(rawMsg, scroll = true) {
           if (e.key === 'Escape') {
             doneCapturing();
             finishCapture(btn, null, null);
+            return;
+          }
+          if (e.key === ' ') {
+            if (_keyCapTimer) { clearTimeout(_keyCapTimer); _keyCapTimer = null; }
+            doneCapturing();
+            finishCapture(btn, 'Space', ' ');
             return;
           }
           var modifierKeys = {Control:1,Shift:1,Alt:1,Meta:1};
@@ -5895,6 +5901,7 @@ function addMessage(rawMsg, scroll = true) {
       localStorage.setItem(KEYBINDS_STORAGE_KEY, JSON.stringify(out));
       keybinds = Object.assign({}, out);
     } catch (e) {}
+    try { api.send('update-keybinds', keybinds); } catch (e) {}
     saveSettingsToStorage();
     showSettingsSaved();
   }
@@ -6005,6 +6012,17 @@ function addMessage(rawMsg, scroll = true) {
       if (e.key === 'Escape') {
         if (window._keyCapTimerV2) { clearTimeout(window._keyCapTimerV2); window._keyCapTimerV2 = null; }
         finishCapture(targetBtn, null, false);
+        window.removeEventListener('keydown', onKey, true);
+        return;
+      }
+      if (e.key === ' ') {
+        if (window._keyCapTimerV2) { clearTimeout(window._keyCapTimerV2); window._keyCapTimerV2 = null; }
+        keybinds[keyCaptureTarget] = '';
+        if (targetBtn) {
+          try { targetBtn.textContent = 'Disabled'; } catch (err) {}
+          try { targetBtn.title = (keyCaptureTarget === 'focusKey' ? 'Focus chat' : 'Toggle overlay') + ': Disabled'; } catch (err) {}
+        }
+        saveKeybinds();
         window.removeEventListener('keydown', onKey, true);
         return;
       }
@@ -7175,8 +7193,8 @@ function addMessage(rawMsg, scroll = true) {
   if (toggleKeyBtn) toggleKeyBtn.addEventListener('click', (e) => beginCapture(toggleKeyBtn, 'toggleKey'));
     if (settingsResetBtn) settingsResetBtn.addEventListener('click', () => {
     keybinds = { ...defaultKeybinds };
-    if (focusKeyBtn) { focusKeyBtn.textContent = keybinds.focusKey; focusKeyBtn.title = `Focus chat: ${keybinds.focusKey}`; }
-    if (toggleKeyBtn) { toggleKeyBtn.textContent = keybinds.toggleKey; toggleKeyBtn.title = `Toggle overlay: ${keybinds.toggleKey}`; }
+    if (focusKeyBtn) { focusKeyBtn.textContent = keybinds.focusKey || "Disabled"; focusKeyBtn.title = `Focus chat: ${keybinds.focusKey}`; }
+    if (toggleKeyBtn) { toggleKeyBtn.textContent = keybinds.toggleKey || "Disabled"; toggleKeyBtn.title = `Toggle overlay: ${keybinds.toggleKey}`; }
       settings = { ...defaultSettings };
       try { const cb = document.getElementById('playMentionHidden'); if (cb) cb.checked = !!settings.playMentionWhenHidden; } catch (e) {}
       try { const spamFilter = document.getElementById('spamFilterToggle'); if (spamFilter) spamFilter.checked = settings.spamFilter !== false; } catch (e) {}

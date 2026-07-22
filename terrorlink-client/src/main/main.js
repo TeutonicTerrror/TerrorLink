@@ -977,6 +977,7 @@ app.whenReady().then(async () => {
 
   function registerSlashShortcuts() {
     try {
+      if (!currentFocusKey) return;
       if (!win) return;
       if (globalShortcut.isRegistered('/')) return;
       if (win && win.isFocused && win.isFocused()) return;
@@ -1135,12 +1136,12 @@ app.whenReady().then(async () => {
         const prevHostToggle = currentHostToggleKey;
         const prevSettings = currentSettingsKey;
         const prevCopyInvite = currentCopyInviteKey;
-        const nextFocus = (newBindings.focusKey || currentFocusKey) + '';
-        const nextToggle = (newBindings.toggleKey || currentToggleKey) + '';
-        const nextHostPanel = (newBindings.hostPanelKey || currentHostPanelKey) + '';
-        const nextHostToggle = (newBindings.hostToggleKey || currentHostToggleKey) + '';
-        const nextSettings = (newBindings.settingsKey || currentSettingsKey) + '';
-        const nextCopyInvite = (newBindings.copyInviteKey || currentCopyInviteKey) + '';
+        const nextFocus = (newBindings.focusKey != null ? newBindings.focusKey : currentFocusKey) + '';
+        const nextToggle = (newBindings.toggleKey != null ? newBindings.toggleKey : currentToggleKey) + '';
+        const nextHostPanel = (newBindings.hostPanelKey != null ? newBindings.hostPanelKey : currentHostPanelKey) + '';
+        const nextHostToggle = (newBindings.hostToggleKey != null ? newBindings.hostToggleKey : currentHostToggleKey) + '';
+        const nextSettings = (newBindings.settingsKey != null ? newBindings.settingsKey : currentSettingsKey) + '';
+        const nextCopyInvite = (newBindings.copyInviteKey != null ? newBindings.copyInviteKey : currentCopyInviteKey) + '';
 
         currentToggleKey = nextToggle;
         try { unregisterToggleAccelerator(); } catch (e) {}
