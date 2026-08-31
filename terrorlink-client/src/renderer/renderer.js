@@ -654,8 +654,10 @@ document.addEventListener('DOMContentLoaded', () => {
   const defaultKeybinds = { focusKey: '/', toggleKey: ']', hostPanelKey: 'Control+H', copyInviteKey: 'Control+I', hostToggleKey: 'Control+Shift+H', settingsKey: 'Control+Shift+S' };
   let keybinds = { ...defaultKeybinds };
   const SETTINGS_STORAGE_KEY = 'terrorlink_settings';
+  const TEXT_MACROS_KEY = 'terrorlink_text_macros';
   const defaultSettings = { playMentionWhenHidden: true, theme: 'default', bgOpacity: 92, bgBlur: 0, spamFilter: true, trueOverlay: false, enableDebugLogging: false, giphyApiKey: '', emojiSet: 'system' };
   let settings = { ...defaultSettings };
+  let textMacros = Array.from({ length: 5 }, () => ({ key: '', text: '' }));
   let intentionalDisconnect = false;
   let reconnectAttempts = 0;
   let reconnectTimer = null;
@@ -794,6 +796,32 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function saveSettingsToStorage() {
     try { localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings)); } catch (e) {}
+  }
+
+  function saveTextMacros() {
+    try {
+      textMacros = textMacros.slice(0, 5).map((m) => ({ key: String(m.key || '').trim(), text: String(m.text || '').trim() }));
+      localStorage.setItem(TEXT_MACROS_KEY, JSON.stringify(textMacros));
+    } catch (e) {}
+    try { api.send('update-text-macros', textMacros); } catch (e) {}
+  }
+
+  function loadTextMacros() {
+    try {
+      const raw = localStorage.getItem(TEXT_MACROS_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          textMacros = parsed.slice(0, 5).map((m) => ({ key: String(m && m.key || ''), text: String(m && m.text || '') }));
+          while (textMacros.length < 5) textMacros.push({ key: '', text: '' });
+        }
+      }
+    } catch (e) {}
+  }
+
+  function updateTextMacroHook() {
+    const active = textMacros.some((m) => String(m.key || '').trim() && String(m.text || '').trim());
+    try { api.send('update-text-macros', textMacros); } catch (e) {}
   }
   const GIF_FAV_KEY = 'terrorlink_gif_favorites';
 
@@ -1169,6 +1197,22 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     }
   } catch (e) {}
+
+  api.on('request-text-macros', () => {
+    try { api.send('update-text-macros', textMacros); } catch (e) {}
+  });
+
+  api.on('text-macro-send', async (payload) => {
+    const message = payload && typeof payload === 'object' ? payload.text : payload;
+    const index = payload && typeof payload === 'object' && Number.isInteger(payload.index) ? payload.index : 0;
+    if (!message) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      showShortcutToast(`Macro ${index + 1} unavailable`);
+      return;
+    }
+    await sendMessage(message, { skipCommands: true });
+    showShortcutToast(`Sent Macro ${index + 1}`);
+  });
 
   api.on('true-overlay-status', (status) => {
     try {
@@ -5786,6 +5830,29 @@ var _ep = getEmojiProcessor(); if (_ep) _ep(reactBtn);
       ]
     },
     {
+      section: 'Text Macros',
+      settings: textMacros.flatMap((macro, index) => [
+        {
+          key: `textMacro${index}Key`,
+          type: 'keybind',
+          macroIndex: index,
+          label: `Macro ${index + 1} key`,
+          description: 'Single key. Fires globally when TerrorLink is unfocused.',
+          onChange: (val) => { textMacros[index].key = val; saveTextMacros(); updateTextMacroHook(); }
+        },
+        {
+          key: `textMacro${index}Text`,
+          type: 'textMacroText',
+          macroIndex: index,
+          label: `Macro ${index + 1} message`,
+          description: 'Message sent when the macro key is pressed.',
+          placeholder: 'Leave blank to disable',
+          maxlength: 2000,
+          onChange: (val) => { textMacros[index].text = val; saveTextMacros(); updateTextMacroHook(); }
+        }
+      ])
+    },
+    {
       section: 'Keybinds',
       settings: [
         {
@@ -5969,7 +6036,7 @@ var _ep = getEmojiProcessor(); if (_ep) _ep(reactBtn);
         }
       });
       control.appendChild(btn);
-    } else if (setting.type === 'text') {
+    } else if (setting.type === 'textMacroText' || setting.type === 'text') {
       const input = document.createElement('input');
       input.type = 'text';
       input.className = 'input';
@@ -6002,9 +6069,9 @@ var _ep = getEmojiProcessor(); if (_ep) _ep(reactBtn);
       settingsBody.appendChild(header);
 
       section.settings.forEach((setting) => {
-        const currentValue = setting.type === 'keybind'
-          ? keybinds[setting.key]
-          : settings[setting.key];
+        const currentValue = setting.macroIndex !== undefined
+          ? textMacros[setting.macroIndex][setting.type === 'textMacroText' ? 'text' : 'key']
+          : setting.type === 'keybind' ? keybinds[setting.key] : settings[setting.key];
         const control = createSettingControl(setting, currentValue);
         settingsBody.appendChild(control);
       });
@@ -7389,6 +7456,8 @@ var _ep = getEmojiProcessor(); if (_ep) _ep(reactBtn);
   });
 
   loadKeybindsFromStorage();
+  loadTextMacros();
+  try { api.send('update-text-macros', textMacros); } catch (e) {}
 
   window.addEventListener('beforeunload', () => {
     intentionalDisconnect = true;

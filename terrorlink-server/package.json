@@ -1,6 +1,6 @@
 {
   "name": "terrorlink-server",
-  "version": "1.0.14",
+  "version": "1.0.17",
   "license": "GPL-3.0-or-later",
   "main": "src/server.js",
   "scripts": {

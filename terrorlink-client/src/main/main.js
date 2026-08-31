@@ -147,6 +147,11 @@ let currentHostPanelKey = 'Control+H';
 let currentHostToggleKey = 'Control+Shift+H';
 let currentSettingsKey = 'Control+Shift+S';
 let currentCopyInviteKey = 'Control+I';
+let currentTextMacros = [];
+let macroHookRunning = false;
+let macroHookCallback = null;
+let lastMacroSentAt = 0;
+const MACRO_COOLDOWN_MS = 1500;
 let currentTheme = 'default';
 const MIN_WINDOW_WIDTH = 420;
 const MIN_WINDOW_HEIGHT = 340;
@@ -686,8 +691,58 @@ ipcMain.on('resize-window', (_event, size = {}) => {
   } catch (e) {}
 });
 
+function updateTextMacros(macros) {
+  currentTextMacros = Array.isArray(macros) ? macros.slice(0, 5).map((m) => ({
+    key: String(m && m.key || '').trim().toLowerCase(),
+    text: String(m && m.text || '').trim()
+  })).filter((m) => m.key.length === 1 && m.text) : [];
+}
+
+function startMacroHook() {
+  if (macroHookRunning) return true;
+  const hook = loadTLHook();
+  if (!hook) return false;
+  try {
+    macroHookCallback = (eventCode) => {
+      if (!macroHookRunning || !win || win.isDestroyed()) return;
+      if (win.isFocused() || win.isMinimized()) return;
+      const isKeyUp = (eventCode & 0x80000000) !== 0;
+      if (isKeyUp) return;
+      const key = VK_MAP[eventCode & 0x7FFFFFFF] || '';
+      if (!key || key.length !== 1) return;
+      const macroIndex = currentTextMacros.findIndex((entry) => entry.key === key.toLowerCase());
+      if (macroIndex === -1) return;
+      const now = Date.now();
+      if (now - lastMacroSentAt < MACRO_COOLDOWN_MS) return;
+      lastMacroSentAt = now;
+      win.webContents.send('text-macro-send', { text: currentTextMacros[macroIndex].text, index: macroIndex });
+    };
+    macroHookRunning = !!hook.startHook(macroHookCallback);
+    if (!macroHookRunning) macroHookCallback = null;
+    return macroHookRunning;
+  } catch (e) {
+    macroHookRunning = false;
+    macroHookCallback = null;
+    return false;
+  }
+}
+
+function stopMacroHook() {
+  if (!macroHookRunning) return;
+  try { const hook = loadTLHook(); if (hook) hook.stopHook(); } catch (e) {}
+  macroHookRunning = false;
+  macroHookCallback = null;
+}
+
+ipcMain.on('update-text-macros', (_ev, macros = []) => {
+  updateTextMacros(macros);
+  if (currentTextMacros.length) startMacroHook();
+  else stopMacroHook();
+});
+
 ipcMain.on('true-overlay-enable', () => {
   if (trueOverlayEnabled) return;
+  stopMacroHook();
   const hook = loadTLHook();
   if (!hook) {
     debugWrite('true-overlay-enable: TLHook not available');
@@ -856,6 +911,7 @@ ipcMain.on('true-overlay-disable', () => {
       win.webContents.send('true-overlay-deactivate');
       win.webContents.send('true-overlay-status', { enabled: false });
     }
+    if (currentTextMacros.length) startMacroHook();
   } catch (e) {
     debugWrite('true-overlay-disable error: ' + (e && e.message));
   }
@@ -1111,6 +1167,9 @@ app.whenReady().then(async () => {
       return;
     }
     debugWrite('registerIPCHandlers: starting registration');
+    try {
+      if (win.webContents && win.webContents.send) win.webContents.send('request-text-macros');
+    } catch (e) {}
 
     ipcMain.on('open-youtube-player', (_ev, videoId) => {
       if (!videoId || typeof videoId !== 'string') return;
