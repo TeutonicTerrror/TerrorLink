@@ -1,0 +1,41 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<linearGradient id="tile" x1="64" y1="16" x2="448" y2="496" gradientUnits="userSpaceOnUse">
+<stop offset="0" stop-color="#2B1A4A"/>
+<stop offset="0.55" stop-color="#140E22"/>
+<stop offset="1" stop-color="#0A0710"/>
+</linearGradient>
+<radialGradient id="glow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(256 236) scale(230)">
+<stop offset="0" stop-color="#8A4DFF" stop-opacity="0.42"/>
+<stop offset="1" stop-color="#8A4DFF" stop-opacity="0"/>
+</radialGradient>
+<linearGradient id="sheen" x1="256" y1="0" x2="256" y2="256" gradientUnits="userSpaceOnUse">
+<stop offset="0" stop-color="#FFFFFF" stop-opacity="0.09"/>
+<stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+</linearGradient>
+<linearGradient id="link" x1="440" y1="70" x2="70" y2="440" gradientUnits="userSpaceOnUse">
+<stop offset="0" stop-color="#E2D2FF"/>
+<stop offset="0.5" stop-color="#A673FF"/>
+<stop offset="1" stop-color="#7A1FD0"/>
+</linearGradient>
+<linearGradient id="rim" x1="256" y1="0" x2="256" y2="512" gradientUnits="userSpaceOnUse">
+<stop offset="0" stop-color="#FFFFFF" stop-opacity="0.22"/>
+<stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0.04"/>
+<stop offset="1" stop-color="#FFFFFF" stop-opacity="0.08"/>
+</linearGradient>
+<filter id="blur" x="-20%" y="-20%" width="140%" height="140%" color-interpolation-filters="sRGB">
+<feGaussianBlur stdDeviation="16"/>
+</filter>
+<path id="glyph" d="M352.04 56.9126C340.511 58.8957 321.23 68.7409 309.909 78.4249C299.961 86.9354 236.766 150.349 216.023 172.636C197.208 192.852 189.427 211.291 189.427 235.662C189.427 256.69 195.676 274.659 208.407 290.231C216.27 299.851 232.209 312.518 236.45 312.518C239.696 312.518 260.855 290.91 260.855 287.594C260.855 286.232 257.65 283.549 253.513 281.448C230.606 269.824 219.912 241.39 228.975 216.199C232.231 207.149 234.633 204.485 285.248 153.83C345.43 93.5984 346.304 92.947 367.164 92.7476C374.58 92.6776 381.462 93.6182 386.632 95.411C397.264 99.0986 409.931 110.791 415.422 121.99C419.072 129.433 419.663 132.465 419.635 143.586C419.58 165.122 417.353 168.541 376.834 209.269L342.526 243.754L344.345 248.838C345.345 251.636 346.561 261.63 347.047 271.046C347.534 280.464 348.298 288.168 348.743 288.168C351.029 288.168 438.206 198.271 442.338 191.651C452.576 175.257 455.941 163.415 455.999 143.586C456.032 132.015 455.273 125.295 453.248 119.235C443.501 90.0614 420.767 67.3803 393.121 59.2472C382.627 56.1608 362.921 55.0407 352.04 56.9126ZM263.398 210.375C256.984 216.976 251.747 222.969 251.759 223.692C251.807 226.328 254.177 228.378 262.156 232.686C277.583 241.017 287.008 257.309 287.282 276.125C287.435 286.64 286.937 288.685 281.701 299.02C276.449 309.391 271.556 314.746 225.061 361.005C166.315 419.453 165.941 419.724 143.835 419.78C132.73 419.809 129.703 419.217 122.27 415.561C102.472 405.825 90.5955 384.625 92.8097 362.974C94.597 345.504 98.3234 340.301 135.905 302.793L169.769 268.998L167.4 258.77C166.098 253.144 164.996 243.076 164.953 236.395C164.909 229.714 164.379 224.247 163.774 224.247C163.169 224.247 142.461 244.621 117.756 269.524C73.3844 314.25 72.7507 314.978 65.6748 329.332C60.3222 340.188 58.0897 346.868 56.8451 355.747C53.2159 381.651 61.3952 408.093 79.0804 427.621C89.4861 439.11 98.6456 445.114 115.151 451.264C126.557 455.513 129.612 456.005 144.595 456C163.282 455.994 173.944 453.023 190.458 443.216C202.605 436.004 303.707 334.763 310.853 322.656C318.396 309.879 321.829 298.333 322.745 282.66C324.599 250.981 312.312 224.753 286.519 205.336C281.432 201.508 276.773 198.375 276.165 198.375C275.557 198.375 269.812 203.774 263.398 210.375Z" fill-rule="evenodd" clip-rule="evenodd"/>
+</defs>
+<rect width="512" height="512" rx="116" fill="url(#tile)"/>
+<rect width="512" height="512" rx="116" fill="url(#glow)"/>
+<rect width="512" height="512" rx="116" fill="url(#sheen)"/>
+<g transform="translate(256 262) scale(0.66) translate(-256 -256)">
+<use href="#glyph" fill="#8A4DFF" opacity="0.7" filter="url(#blur)"/>
+</g>
+<g transform="translate(256 256) scale(0.66) translate(-256 -256)">
+<use href="#glyph" fill="url(#link)"/>
+</g>
+<rect x="3" y="3" width="506" height="506" rx="113" stroke="url(#rim)" stroke-width="6"/>
+</svg>
