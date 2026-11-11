@@ -374,6 +374,123 @@ pub fn is_foreground(_raw: isize) -> bool {
     true
 }
 
+pub enum ClipboardAttachment {
+    Files(Vec<std::path::PathBuf>),
+    Png(Vec<u8>),
+}
+
+#[cfg(windows)]
+mod clipboard {
+    use super::ClipboardAttachment;
+    use windows::core::w;
+    use windows::Win32::Foundation::HGLOBAL;
+    use windows::Win32::System::DataExchange::{
+        CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard, RegisterClipboardFormatW,
+    };
+    use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
+    use windows::Win32::System::Ole::{CF_DIB, CF_HDROP, CF_UNICODETEXT};
+    use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
+
+    fn png_format() -> u32 {
+        unsafe { RegisterClipboardFormatW(w!("PNG")) }
+    }
+
+    fn available(format: u32) -> bool {
+        format != 0 && unsafe { IsClipboardFormatAvailable(format) }.is_ok()
+    }
+
+    pub fn has_attachment() -> bool {
+        available(CF_HDROP.0 as u32)
+            || (!available(CF_UNICODETEXT.0 as u32) && (available(png_format()) || available(CF_DIB.0 as u32)))
+    }
+
+    fn bytes(format: u32) -> Option<Vec<u8>> {
+        unsafe {
+            let global = HGLOBAL(GetClipboardData(format).ok()?.0);
+            let size = GlobalSize(global);
+            let ptr = GlobalLock(global) as *const u8;
+            if ptr.is_null() {
+                return None;
+            }
+            let data = std::slice::from_raw_parts(ptr, size).to_vec();
+            let _ = GlobalUnlock(global);
+            Some(data)
+        }
+    }
+
+    fn files() -> Option<Vec<std::path::PathBuf>> {
+        unsafe {
+            let hdrop = HDROP(GetClipboardData(CF_HDROP.0 as u32).ok()?.0);
+            let count = DragQueryFileW(hdrop, u32::MAX, None);
+            let paths = (0..count)
+                .filter_map(|index| {
+                    let len = DragQueryFileW(hdrop, index, None) as usize;
+                    let mut buffer = vec![0u16; len + 1];
+                    let written = DragQueryFileW(hdrop, index, Some(&mut buffer)) as usize;
+                    (written > 0).then(|| String::from_utf16_lossy(&buffer[..written]).into())
+                })
+                .collect::<Vec<_>>();
+            (!paths.is_empty()).then_some(paths)
+        }
+    }
+
+    pub fn read_attachment() -> Option<ClipboardAttachment> {
+        unsafe { OpenClipboard(None) }.ok()?;
+        let result = if available(CF_HDROP.0 as u32) {
+            files().map(ClipboardAttachment::Files)
+        } else if available(png_format()) {
+            bytes(png_format()).map(ClipboardAttachment::Png)
+        } else {
+            bytes(CF_DIB.0 as u32).and_then(|dib| super::dib_to_png(&dib)).map(ClipboardAttachment::Png)
+        };
+        unsafe {
+            let _ = CloseClipboard();
+        }
+        result
+    }
+}
+
+#[cfg(windows)]
+pub use clipboard::{has_attachment as clipboard_has_attachment, read_attachment as read_clipboard_attachment};
+
+#[cfg(not(windows))]
+pub fn clipboard_has_attachment() -> bool {
+    false
+}
+#[cfg(not(windows))]
+pub fn read_clipboard_attachment() -> Option<ClipboardAttachment> {
+    None
+}
+
+fn dib_to_png(dib: &[u8]) -> Option<Vec<u8>> {
+    let read_u32 = |at: usize| Some(u32::from_le_bytes(dib.get(at..at + 4)?.try_into().ok()?));
+    let header_size = read_u32(0)?;
+    let bit_count = u16::from_le_bytes(dib.get(14..16)?.try_into().ok()?);
+    let compression = read_u32(16)?;
+    let colors_used = read_u32(32)?;
+    let palette = if colors_used > 0 {
+        colors_used
+    } else if bit_count <= 8 {
+        1 << bit_count
+    } else {
+        0
+    };
+    let masks = if compression == 3 && header_size == 40 { 12 } else { 0 };
+    let offset = 14 + header_size + masks + palette * 4;
+    let mut bmp = Vec::with_capacity(dib.len() + 14);
+    bmp.extend_from_slice(b"BM");
+    bmp.extend_from_slice(&((dib.len() + 14) as u32).to_le_bytes());
+    bmp.extend_from_slice(&[0; 4]);
+    bmp.extend_from_slice(&offset.to_le_bytes());
+    bmp.extend_from_slice(dib);
+    let decoded = image::load_from_memory_with_format(&bmp, image::ImageFormat::Bmp).ok()?;
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgb8(decoded.to_rgb8())
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .ok()?;
+    Some(png)
+}
+
 pub fn play_mention_sound() {
     #[cfg(windows)]
     {
@@ -422,6 +539,23 @@ fn chime() -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dib_converts_to_png() {
+        let mut dib = Vec::new();
+        dib.extend_from_slice(&40u32.to_le_bytes());
+        dib.extend_from_slice(&2i32.to_le_bytes());
+        dib.extend_from_slice(&1i32.to_le_bytes());
+        dib.extend_from_slice(&1u16.to_le_bytes());
+        dib.extend_from_slice(&24u16.to_le_bytes());
+        dib.extend_from_slice(&[0; 24]);
+        dib.extend_from_slice(&[0, 0, 255, 0, 255, 0, 0, 0]);
+        let png = super::dib_to_png(&dib).expect("png");
+        let image = image::load_from_memory(&png).unwrap().to_rgb8();
+        assert_eq!(image.dimensions(), (2, 1));
+        assert_eq!(image.get_pixel(0, 0).0, [255, 0, 0]);
+        assert_eq!(image.get_pixel(1, 0).0, [0, 255, 0]);
+    }
+
     #[test]
     fn chime_is_a_well_formed_wav() {
         let wav = super::chime();

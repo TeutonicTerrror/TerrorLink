@@ -48,6 +48,8 @@ pub struct Config {
     pub window_width: f32,
     pub window_height: f32,
     pub layout_version: u32,
+    pub chat_opacity: f32,
+    pub bubble_opacity: f32,
 }
 
 impl Default for Config {
@@ -76,6 +78,8 @@ impl Default for Config {
             window_width: 500.0,
             window_height: 340.0,
             layout_version: 0,
+            chat_opacity: 0.55,
+            bubble_opacity: 1.0,
         }
     }
 }

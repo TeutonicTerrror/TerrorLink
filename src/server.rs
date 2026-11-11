@@ -485,6 +485,7 @@ async fn handle_request(
             text,
             client_id,
             attachment,
+            reply_to,
         } => {
             let settings = state.inner.lock().settings.clone();
             let normalized = match attachment {
@@ -533,6 +534,10 @@ async fn handle_request(
                 ..Default::default()
             };
             let mut inner = state.inner.lock();
+            let entry = Message {
+                reply_to: build_reply(&inner.history, reply_to.as_deref()),
+                ..entry
+            };
             push_entry(&mut inner, &state.bus, entry);
         }
         ClientRequest::Attachment {
@@ -575,7 +580,7 @@ async fn handle_request(
             push_entry(&mut inner, &state.bus, entry);
         }
         ClientRequest::EightBall { question } => {
-            let question = clamp_text(question.trim());
+            let question = clamp_text(question.trim()).replace('\n', " ");
             if question.is_empty() {
                 send_direct(
                     direct,
@@ -585,22 +590,28 @@ async fn handle_request(
             }
             let entry = Message {
                 id: uuid::Uuid::new_v4().to_string(),
-                kind: "text".into(),
+                kind: "result".into(),
                 from: "Magic8Ball".into(),
-                text: format!("🎱 {}\nQ: {question}", answer_eight_ball()),
+                text: format!("🎱 Magic 8-Ball\n{username} asks: *{question}*\n**{}**", answer_eight_ball()),
                 ts: now_ms(),
                 ..Default::default()
             };
             let mut inner = state.inner.lock();
             push_entry(&mut inner, &state.bus, entry);
         }
-        ClientRequest::Coinflip => {
+        ClientRequest::Coinflip { message } => {
             let side = if rand::random::<bool>() { "Heads" } else { "Tails" };
+            let message = clamp_text(message.trim()).replace('\n', " ");
+            let detail = if message.is_empty() {
+                format!("{username} flipped a coin")
+            } else {
+                format!("{username} flips for *{message}*")
+            };
             let entry = Message {
                 id: uuid::Uuid::new_v4().to_string(),
-                kind: "text".into(),
+                kind: "result".into(),
                 from: "Coinflip".into(),
-                text: format!("🪙 {username} flipped a coin: {side}"),
+                text: format!("🪙 Coin flip\n{detail}\n**{side}**"),
                 ts: now_ms(),
                 ..Default::default()
             };

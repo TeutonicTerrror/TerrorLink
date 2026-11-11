@@ -5,6 +5,7 @@ pub const MAX_USERNAME_LEN: usize = 15;
 pub const MAX_TEXT_LEN: usize = 4000;
 pub const MAX_ATTACHMENT_BYTES: usize = 20 * 1024 * 1024;
 pub const MAX_HISTORY: usize = 500;
+pub const MAX_REPLY_PREVIEW: usize = 120;
 pub const VERSION_MISMATCH: &str = "Terror Link versions not compatible. Try updating your Terror Link";
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -31,6 +32,17 @@ pub struct SystemInfo {
     pub status: String,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplyRef {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub from: String,
+    #[serde(default)]
+    pub preview: String,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Message {
@@ -46,6 +58,8 @@ pub struct Message {
     pub attachment: Option<Attachment>,
     #[serde(default)]
     pub system: Option<SystemInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<ReplyRef>,
     #[serde(default)]
     pub ts: i64,
 }
@@ -115,10 +129,11 @@ pub enum ClientCommand {
     Send {
         text: String,
         attachment: Option<Attachment>,
+        reply_to: Option<String>,
     },
     EightBall { question: String },
     Ping,
-    Coinflip,
+    Coinflip { message: String },
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -131,6 +146,8 @@ pub enum ClientRequest {
         client_id: Option<String>,
         #[serde(default)]
         attachment: Option<Attachment>,
+        #[serde(default, rename = "replyTo")]
+        reply_to: Option<String>,
     },
     Attachment {
         attachment: Attachment,
@@ -139,7 +156,10 @@ pub enum ClientRequest {
         #[serde(default, rename = "clientId")]
         client_id: Option<String>,
     },
-    Coinflip,
+    Coinflip {
+        #[serde(default)]
+        message: String,
+    },
     #[serde(rename = "8ball")]
     EightBall {
         #[serde(default)]
@@ -162,6 +182,71 @@ pub fn sanitize_username(name: &str) -> String {
 
 pub fn clamp_text(text: &str) -> String {
     text.chars().take(MAX_TEXT_LEN).collect()
+}
+
+pub fn reply_preview(target: &Message) -> String {
+    let flat: String = target
+        .text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(MAX_REPLY_PREVIEW)
+        .collect();
+    match (flat.is_empty(), target.attachment.as_ref()) {
+        (true, Some(attachment)) => format!("[{}]", attachment.kind),
+        _ => flat,
+    }
+}
+
+pub fn build_reply(history: &std::collections::VecDeque<Message>, id: Option<&str>) -> Option<ReplyRef> {
+    let id = id?.trim();
+    let target = history
+        .iter()
+        .rev()
+        .find(|entry| entry.id == id && matches!(entry.kind.as_str(), "text" | "attachment"))?;
+    Some(ReplyRef {
+        id: target.id.clone(),
+        from: target.from.clone(),
+        preview: reply_preview(target),
+    })
+}
+
+#[cfg(test)]
+mod reply_tests {
+    use super::*;
+
+    fn entry(id: &str, kind: &str, text: &str) -> Message {
+        Message {
+            id: id.into(),
+            kind: kind.into(),
+            from: "ann".into(),
+            text: text.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn builds_reply_from_history() {
+        let history = std::collections::VecDeque::from(vec![entry("a", "text", "hello   there\nfriend")]);
+        let reply = build_reply(&history, Some("a")).unwrap();
+        assert_eq!(reply.from, "ann");
+        assert_eq!(reply.preview, "hello there friend");
+    }
+
+    #[test]
+    fn rejects_unknown_and_system_targets() {
+        let history = std::collections::VecDeque::from(vec![entry("s", "system", "joined")]);
+        assert!(build_reply(&history, Some("s")).is_none());
+        assert!(build_reply(&history, Some("missing")).is_none());
+        assert!(build_reply(&history, None).is_none());
+    }
+
+    #[test]
+    fn clamps_long_preview() {
+        let long = "x".repeat(MAX_REPLY_PREVIEW + 50);
+        assert_eq!(reply_preview(&entry("a", "text", &long)).chars().count(), MAX_REPLY_PREVIEW);
+    }
 }
 
 const EIGHT_BALL: [&str; 20] = [

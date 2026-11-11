@@ -9,6 +9,7 @@ mod protocol;
 mod server;
 mod theme;
 mod tunnel;
+mod updater;
 mod ui;
 
 use std::sync::Arc;

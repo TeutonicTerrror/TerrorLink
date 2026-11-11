@@ -8,7 +8,7 @@
 
 No accounts. No servers to rent. 100% Opensource.
 
-![Version](https://img.shields.io/badge/version-2.0.0-8b5cf6)
+![Version](https://img.shields.io/badge/version-2.1.0-8b5cf6)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-1a1427)
 ![Rust](https://img.shields.io/badge/built%20with-Rust-b7410e)
 ![License](https://img.shields.io/badge/license-GPL--3.0-4ade80)

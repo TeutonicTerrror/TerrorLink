@@ -5,6 +5,14 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
+    println!("cargo:rerun-if-changed=Cargo.toml");
+    if std::env::var("PROFILE").as_deref() == Ok("release") {
+        if let Some(profile_dir) = out_dir.ancestors().nth(3) {
+            let manifest = format!("version: {}
+", std::env::var("CARGO_PKG_VERSION").expect("version"));
+            std::fs::write(profile_dir.join("version.yml"), manifest).expect("write version.yml");
+        }
+    }
     let ico_path = out_dir.join("terrorlink.ico");
     let svg = std::fs::read("assets/logos/default/Logo.svg").expect("Logo.svg is missing");
     let ico = build_ico(&svg, &[16, 20, 24, 32, 40, 48, 64, 256]);

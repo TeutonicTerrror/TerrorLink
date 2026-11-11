@@ -1,7 +1,7 @@
 use std::ops::Range;
 
 use gpui::{
-    actions, div, fill, point, prelude::*, px, relative, size, App, Bounds, ClipboardItem,
+    actions, anchored, deferred, div, fill, Corner, point, prelude::*, px, relative, size, App, Bounds, ClipboardItem,
     ContentMask, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
     EntityInputHandler, FocusHandle, Focusable, GlobalElementId, KeyBinding, LayoutId,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
@@ -39,6 +39,7 @@ actions!(
         Newline,
         Escape,
         Submit,
+        Complete,
     ]
 );
 
@@ -72,6 +73,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("up", Up, Some(CONTEXT)),
         KeyBinding::new("down", Down, Some(CONTEXT)),
         KeyBinding::new("escape", Escape, Some(CONTEXT)),
+        KeyBinding::new("tab", Complete, Some(CONTEXT)),
     ]);
 }
 
@@ -87,6 +89,10 @@ pub struct TextInput {
     enter_newline: bool,
     markdown: bool,
     space_disables: bool,
+    attach_paste: bool,
+    commands: bool,
+    emoji_pick: usize,
+    emoji_dismissed: bool,
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
@@ -128,6 +134,10 @@ impl TextInput {
             enter_newline: false,
             markdown: false,
             space_disables: false,
+            attach_paste: false,
+            commands: false,
+            emoji_pick: 0,
+            emoji_dismissed: false,
             selected_range: end..end,
             selection_reversed: false,
             marked_range: None,
@@ -172,6 +182,80 @@ impl TextInput {
     pub fn space_disables(mut self) -> Self {
         self.space_disables = true;
         self
+    }
+
+    pub fn attach_paste(mut self) -> Self {
+        self.attach_paste = true;
+        self
+    }
+
+    pub fn commands(mut self) -> Self {
+        self.commands = true;
+        self
+    }
+
+    fn is_focused(&self, window: &Window) -> bool {
+        self.focus_handle.is_focused(window) && window.is_window_active()
+    }
+
+    fn suggestions(&self) -> Option<(usize, Vec<Suggestion>)> {
+        if self.emoji_dismissed || !self.selected_range.is_empty() {
+            return None;
+        }
+        let before = &self.content[..self.selected_range.end];
+        if self.commands {
+            let found = command_matches(before);
+            if !found.is_empty() {
+                return Some((0, found));
+            }
+        }
+        if !self.emoji {
+            return None;
+        }
+        let (start, query) = emoji_query_in(before)?;
+        let found: Vec<Suggestion> = emoji_matches(query)
+            .into_iter()
+            .map(|(emoji, code)| Suggestion {
+                lead: emoji,
+                label: format!(":{code}:"),
+                hint: "",
+                insert: emoji.to_string(),
+            })
+            .collect();
+        (!found.is_empty()).then_some((start, found))
+    }
+
+    fn accept_emoji(&mut self, index: usize, cx: &mut Context<Self>) -> bool {
+        let Some((start, mut found)) = self.suggestions() else {
+            return false;
+        };
+        if index >= found.len() {
+            return false;
+        }
+        let insert = found.swap_remove(index).insert;
+        let cursor = self.selected_range.end;
+        let end = start + insert.len();
+        self.content = format!("{}{}{}", &self.content[..start], insert, &self.content[cursor..]).into();
+        self.selected_range = end..end;
+        self.emoji_pick = 0;
+        cx.notify();
+        true
+    }
+
+    fn complete(&mut self, _: &Complete, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.accept_emoji(self.emoji_pick, cx) {
+            cx.propagate();
+        }
+    }
+
+    fn move_emoji_pick(&mut self, delta: isize, cx: &mut Context<Self>) -> bool {
+        let count = self.suggestions().map_or(0, |(_, found)| found.len());
+        if count == 0 {
+            return false;
+        }
+        self.emoji_pick = (self.emoji_pick as isize + delta).rem_euclid(count as isize) as usize;
+        cx.notify();
+        true
     }
 
     fn expand_shortcode_before_cursor(&mut self) {
@@ -238,10 +322,18 @@ impl TextInput {
     }
 
     fn escape(&mut self, _: &Escape, _: &mut Window, cx: &mut Context<Self>) {
-        cx.propagate();
+        if self.suggestions().is_none() {
+            cx.propagate();
+        } else {
+            self.emoji_dismissed = true;
+            cx.notify();
+        }
     }
 
     fn submit(&mut self, _: &Submit, window: &mut Window, cx: &mut Context<Self>) {
+        if self.accept_emoji(self.emoji_pick, cx) {
+            return;
+        }
         if self.enter_newline {
             self.replace_text_in_range(None, "\n", window, cx);
         } else {
@@ -250,6 +342,9 @@ impl TextInput {
     }
 
     fn up(&mut self, _: &Up, _: &mut Window, cx: &mut Context<Self>) {
+        if self.move_emoji_pick(-1, cx) {
+            return;
+        }
         match self.vertical(-1) {
             Some(offset) => self.move_to(offset, cx),
             None => cx.propagate(),
@@ -257,6 +352,9 @@ impl TextInput {
     }
 
     fn down(&mut self, _: &Down, _: &mut Window, cx: &mut Context<Self>) {
+        if self.move_emoji_pick(1, cx) {
+            return;
+        }
         match self.vertical(1) {
             Some(offset) => self.move_to(offset, cx),
             None => cx.propagate(),
@@ -372,6 +470,10 @@ impl TextInput {
     }
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
+        if self.attach_paste && crate::platform::clipboard_has_attachment() {
+            cx.propagate();
+            return;
+        }
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
             let text = if self.multiline {
                 text.replace("\r\n", "\n").replace('\r', "\n")
@@ -400,6 +502,7 @@ impl TextInput {
     }
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.emoji_dismissed = false;
         self.selected_range = offset..offset;
         self.selection_reversed = false;
         cx.notify()
@@ -588,6 +691,8 @@ impl EntityInputHandler for TextInput {
         self.selected_range = range.start + new_text.len()..range.start + new_text.len();
         self.selection_reversed = false;
         self.marked_range.take();
+        self.emoji_pick = 0;
+        self.emoji_dismissed = false;
         if self.emoji && new_text.ends_with(':') {
             self.expand_shortcode_before_cursor();
         }
@@ -714,7 +819,7 @@ impl Element for TextElement {
         let content = input.content.clone();
         let selected_range = input.selected_range.clone();
         let cursor = if content.is_empty() { 0 } else { input.cursor_offset() };
-        let focused = input.focus_handle.is_focused(window);
+        let focused = input.is_focused(window);
         let style = window.text_style();
         let line_height = window.line_height();
         let font_size = style.font_size.to_pixels(window.rem_size());
@@ -888,8 +993,54 @@ impl Element for TextElement {
 impl Render for TextInput {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme();
-        let focused = self.focus_handle.is_focused(window);
+        let focused = self.is_focused(window);
         let bare = self.bare;
+        let suggestions = if focused { self.suggestions().map(|(_, found)| found).unwrap_or_default() } else { Vec::new() };
+        let pick = self.emoji_pick;
+        let popup = (!suggestions.is_empty()).then(|| {
+            deferred(div().absolute().top_0().left_0().child(
+                anchored().anchor(Corner::BottomLeft).offset(point(px(-4.), px(-8.))).child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .min_w(px(200.))
+                        .p(px(4.))
+                        .rounded(px(9.))
+                        .bg(t.bg_raised)
+                        .border_1()
+                        .border_color(t.border_strong)
+                        .shadow(crate::theme::shadow_md())
+                        .children(suggestions.into_iter().enumerate().map(|(i, suggestion)| {
+                            div()
+                                .id(("emoji-suggestion", i))
+                                .flex()
+                                .items_center()
+                                .gap(px(8.))
+                                .px(px(8.))
+                                .py(px(3.))
+                                .rounded(px(6.))
+                                .cursor_pointer()
+                                .when(i == pick, |d| d.bg(t.accent_soft))
+                                .hover(|s| s.bg(t.surface_hover))
+                                .when(!suggestion.lead.is_empty(), |d| {
+                                    d.child(div().text_size(px(15.)).child(suggestion.lead))
+                                })
+                                .child(div().text_size(px(11.5)).text_color(t.text_muted).child(suggestion.label))
+                                .when(!suggestion.hint.is_empty(), |d| {
+                                    d.child(div().text_size(px(10.5)).text_color(t.text_faint).child(suggestion.hint))
+                                })
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                                        cx.stop_propagation();
+                                        this.accept_emoji(i, cx);
+                                    }),
+                                )
+                        })),
+                ),
+            ))
+            .with_priority(1)
+        });
         div()
             .flex()
             .items_center()
@@ -932,6 +1083,7 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::escape))
             .on_action(cx.listener(Self::up))
             .on_action(cx.listener(Self::down))
+            .on_action(cx.listener(Self::complete))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
@@ -946,11 +1098,101 @@ impl Render for TextInput {
                     .overflow_hidden()
                     .child(TextElement { input: cx.entity() }),
             )
+            .children(popup)
     }
 }
 
 impl Focusable for TextInput {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
+    }
+}
+
+struct Suggestion {
+    lead: &'static str,
+    label: String,
+    hint: &'static str,
+    insert: String,
+}
+
+const COMMANDS: [(&str, &str, &str); 6] = [
+    ("/8ball", "<question>", "ask the magic 8-ball"),
+    ("/coinflip", "[message]", "flip a coin"),
+    ("/flip", "[message]", "flip a coin"),
+    ("/help", "", "list commands"),
+    ("/notes", "", "open temporary notes"),
+    ("/ping", "", "check your latency"),
+];
+
+fn command_matches(before: &str) -> Vec<Suggestion> {
+    if !before.starts_with('/') || before.contains(char::is_whitespace) {
+        return Vec::new();
+    }
+    let typed = before.to_ascii_lowercase();
+    COMMANDS
+        .into_iter()
+        .filter_map(|(name, args, hint)| {
+            let insert = if args.is_empty() { name.to_string() } else { format!("{name} ") };
+            (name.starts_with(typed.as_str()) && insert != typed).then(|| Suggestion {
+                lead: "",
+                label: if args.is_empty() { name.to_string() } else { format!("{name} {args}") },
+                hint,
+                insert,
+            })
+        })
+        .collect()
+}
+
+fn emoji_query_in(before: &str) -> Option<(usize, &str)> {
+    let start = before.rfind(':')?;
+    let code = &before[start + 1..];
+    let boundary = before[..start].chars().next_back().is_none_or(char::is_whitespace);
+    let valid = code.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '+' | '-'));
+    (boundary && valid && code.len() >= 2).then_some((start, code))
+}
+
+fn emoji_matches(query: &str) -> Vec<(&'static str, &'static str)> {
+    let query = query.to_ascii_lowercase();
+    let mut matches: Vec<(&'static str, &'static str)> = emojis::iter()
+        .flat_map(|emoji| emoji.shortcodes().map(move |code| (emoji.as_str(), code)))
+        .filter(|(_, code)| code.contains(query.as_str()))
+        .collect();
+    matches.sort_by_key(|(_, code)| (!code.starts_with(query.as_str()), code.len()));
+    let mut seen = std::collections::HashSet::new();
+    matches.retain(|(emoji, _)| seen.insert(*emoji));
+    matches.truncate(6);
+    matches
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn emoji_query_needs_boundary_and_two_chars() {
+        assert_eq!(emoji_query_in("hi :sk"), Some((3, "sk")));
+        assert_eq!(emoji_query_in(":fi"), Some((0, "fi")));
+        assert_eq!(emoji_query_in("hi :s"), None);
+        assert_eq!(emoji_query_in("12:30"), None);
+        assert_eq!(emoji_query_in("hi :sk ull"), None);
+    }
+
+    #[test]
+    fn command_matches_complete_prefixes_only() {
+        let inserts = |text: &str| command_matches(text).into_iter().map(|s| s.insert).collect::<Vec<_>>();
+        assert_eq!(inserts("/"), ["/8ball ", "/coinflip ", "/flip ", "/help", "/notes", "/ping"]);
+        assert_eq!(inserts("/he"), ["/help"]);
+        assert_eq!(inserts("/8ball"), ["/8ball "]);
+        assert!(inserts("/ping").is_empty());
+        assert!(inserts("/ping ").is_empty());
+        assert!(inserts("hi /he").is_empty());
+        assert!(inserts("/nope").is_empty());
+    }
+
+    #[test]
+    fn emoji_matches_prefers_prefix() {
+        let found = emoji_matches("skul");
+        assert_eq!(found.first().map(|(emoji, _)| *emoji), Some("\u{1F480}"));
+        assert!(found.len() <= 6);
     }
 }

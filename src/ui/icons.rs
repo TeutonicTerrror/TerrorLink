@@ -19,6 +19,7 @@ pub enum Icon {
     Trash,
     Notes,
     Refresh,
+    Reply,
 }
 
 impl Icon {
@@ -39,6 +40,7 @@ impl Icon {
             Icon::Trash => "icons/trash.svg",
             Icon::Notes => "icons/notes.svg",
             Icon::Refresh => "icons/refresh.svg",
+            Icon::Reply => "icons/reply.svg",
         }
     }
 }
@@ -96,6 +98,9 @@ fn source(path: &str) -> Option<String> {
         }
         "icons/refresh.svg" => {
             r#"<path d="M20 11.5A8 8 0 0 0 6 6.5L4 8.5M4 4v4.5h4.5M4 12.5a8 8 0 0 0 14 5l2-2M20 20v-4.5h-4.5"/>"#
+        }
+        "icons/reply.svg" => {
+            r#"<path d="M10 6L4.5 11.5 10 17M4.5 11.5H14a6 6 0 0 1 6 6V19"/>"#
         }
         "icons/keyboard.svg" => {
             r#"<rect x="3" y="6" width="18" height="12" rx="2.5"/><path d="M7 10h.01M11 10h.01M15 10h.01M17 14H7"/>"#

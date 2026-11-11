@@ -339,7 +339,11 @@ async fn session(
                         let _ = socket.close(None).await;
                         return SessionEnd::Switch((url, username));
                     }
-                    ClientCommand::Send { text, attachment } => {
+                    ClientCommand::Send {
+                        text,
+                        attachment,
+                        reply_to,
+                    } => {
                         let client_id = uuid::Uuid::new_v4().to_string();
                         let mut payload = json!({
                             "type": "message",
@@ -348,6 +352,9 @@ async fn session(
                         });
                         if let Some(attachment) = attachment {
                             payload["attachment"] = serde_json::to_value(attachment).unwrap_or_else(|_| json!(null));
+                        }
+                        if let Some(reply_to) = reply_to {
+                            payload["replyTo"] = json!(reply_to);
                         }
                         if socket.send(WsMessage::Text(payload.to_string())).await.is_err() {
                             return SessionEnd::Lost;
@@ -359,8 +366,8 @@ async fn session(
                             return SessionEnd::Lost;
                         }
                     }
-                    ClientCommand::Coinflip => {
-                        let payload = json!({"type": "coinflip"});
+                    ClientCommand::Coinflip { message } => {
+                        let payload = json!({"type": "coinflip", "message": message});
                         if socket.send(WsMessage::Text(payload.to_string())).await.is_err() {
                             return SessionEnd::Lost;
                         }
