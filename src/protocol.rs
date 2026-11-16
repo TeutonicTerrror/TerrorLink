@@ -6,7 +6,9 @@ pub const MAX_TEXT_LEN: usize = 4000;
 pub const MAX_ATTACHMENT_BYTES: usize = 20 * 1024 * 1024;
 pub const MAX_HISTORY: usize = 500;
 pub const MAX_REPLY_PREVIEW: usize = 120;
-pub const VERSION_MISMATCH: &str = "Terror Link versions not compatible. Try updating your Terror Link";
+pub const DELETED_TEXT: &str = "*This message was deleted as per the author's request.*";
+pub const VERSION_MISMATCH: &str =
+    "Terror Link versions not compatible. Try updating your Terror Link";
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -124,16 +126,26 @@ pub enum ServerEvent {
 
 #[derive(Clone, Debug)]
 pub enum ClientCommand {
-    Connect { url: String, username: String },
+    Connect {
+        url: String,
+        username: String,
+    },
     Disconnect,
     Send {
         text: String,
         attachment: Option<Attachment>,
         reply_to: Option<String>,
     },
-    EightBall { question: String },
+    EightBall {
+        question: String,
+    },
     Ping,
-    Coinflip { message: String },
+    Coinflip {
+        message: String,
+    },
+    Delete {
+        id: String,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -170,6 +182,10 @@ pub enum ClientRequest {
         ts: i64,
     },
     List,
+    Delete {
+        #[serde(default)]
+        id: String,
+    },
 }
 
 pub fn now_ms() -> i64 {
@@ -199,7 +215,10 @@ pub fn reply_preview(target: &Message) -> String {
     }
 }
 
-pub fn build_reply(history: &std::collections::VecDeque<Message>, id: Option<&str>) -> Option<ReplyRef> {
+pub fn build_reply(
+    history: &std::collections::VecDeque<Message>,
+    id: Option<&str>,
+) -> Option<ReplyRef> {
     let id = id?.trim();
     let target = history
         .iter()
@@ -210,43 +229,6 @@ pub fn build_reply(history: &std::collections::VecDeque<Message>, id: Option<&st
         from: target.from.clone(),
         preview: reply_preview(target),
     })
-}
-
-#[cfg(test)]
-mod reply_tests {
-    use super::*;
-
-    fn entry(id: &str, kind: &str, text: &str) -> Message {
-        Message {
-            id: id.into(),
-            kind: kind.into(),
-            from: "ann".into(),
-            text: text.into(),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn builds_reply_from_history() {
-        let history = std::collections::VecDeque::from(vec![entry("a", "text", "hello   there\nfriend")]);
-        let reply = build_reply(&history, Some("a")).unwrap();
-        assert_eq!(reply.from, "ann");
-        assert_eq!(reply.preview, "hello there friend");
-    }
-
-    #[test]
-    fn rejects_unknown_and_system_targets() {
-        let history = std::collections::VecDeque::from(vec![entry("s", "system", "joined")]);
-        assert!(build_reply(&history, Some("s")).is_none());
-        assert!(build_reply(&history, Some("missing")).is_none());
-        assert!(build_reply(&history, None).is_none());
-    }
-
-    #[test]
-    fn clamps_long_preview() {
-        let long = "x".repeat(MAX_REPLY_PREVIEW + 50);
-        assert_eq!(reply_preview(&entry("a", "text", &long)).chars().count(), MAX_REPLY_PREVIEW);
-    }
 }
 
 const EIGHT_BALL: [&str; 20] = [
@@ -286,7 +268,10 @@ pub fn normalize_attachment(raw: &Attachment) -> Option<Attachment> {
     }
     let mut attachment = Attachment {
         kind,
-        name: raw.name.as_ref().map(|name| name.chars().take(80).collect()),
+        name: raw
+            .name
+            .as_ref()
+            .map(|name| name.chars().take(80).collect()),
         ..Default::default()
     };
     if let Some(url) = raw.url.as_ref().map(|value| value.trim().to_string()) {
@@ -302,8 +287,52 @@ pub fn normalize_attachment(raw: &Attachment) -> Option<Attachment> {
             return None;
         }
         attachment.data = Some(data);
-        attachment.mime = raw.mime.as_ref().map(|mime| mime.chars().take(120).collect());
+        attachment.mime = raw
+            .mime
+            .as_ref()
+            .map(|mime| mime.chars().take(120).collect());
         return Some(attachment);
     }
     None
+}
+
+#[cfg(test)]
+mod reply_tests {
+    use super::*;
+
+    fn entry(id: &str, kind: &str, text: &str) -> Message {
+        Message {
+            id: id.into(),
+            kind: kind.into(),
+            from: "ann".into(),
+            text: text.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn builds_reply_from_history() {
+        let history =
+            std::collections::VecDeque::from(vec![entry("a", "text", "hello   there\nfriend")]);
+        let reply = build_reply(&history, Some("a")).unwrap();
+        assert_eq!(reply.from, "ann");
+        assert_eq!(reply.preview, "hello there friend");
+    }
+
+    #[test]
+    fn rejects_unknown_and_system_targets() {
+        let history = std::collections::VecDeque::from(vec![entry("s", "system", "joined")]);
+        assert!(build_reply(&history, Some("s")).is_none());
+        assert!(build_reply(&history, Some("missing")).is_none());
+        assert!(build_reply(&history, None).is_none());
+    }
+
+    #[test]
+    fn clamps_long_preview() {
+        let long = "x".repeat(MAX_REPLY_PREVIEW + 50);
+        assert_eq!(
+            reply_preview(&entry("a", "text", &long)).chars().count(),
+            MAX_REPLY_PREVIEW
+        );
+    }
 }

@@ -9,8 +9,8 @@ mod protocol;
 mod server;
 mod theme;
 mod tunnel;
-mod updater;
 mod ui;
+mod updater;
 
 use std::sync::Arc;
 
@@ -19,13 +19,18 @@ use gpui::{
     WindowKind, WindowOptions,
 };
 
-fn main() {
+fn main() -> anyhow::Result<()> {
+    let after_update = std::env::args().any(|arg| arg == updater::RESTART_ARG);
+    if !platform::claim_single_instance(after_update) {
+        platform::show_already_running();
+        return Ok(());
+    }
+
     let runtime = Arc::new(
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .worker_threads(4)
-            .build()
-            .expect("failed to start the async runtime"),
+            .build()?,
     );
     let config = config::Config::load();
 
@@ -40,7 +45,11 @@ fn main() {
                 px(config.window_height.max(320.0)),
             );
             let options = WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, window_size, cx))),
+                window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                    None,
+                    window_size,
+                    cx,
+                ))),
                 titlebar: None,
                 focus: !config.start_hidden,
                 show: true,
@@ -65,4 +74,5 @@ fn main() {
             }
             cx.activate(true);
         });
+    Ok(())
 }

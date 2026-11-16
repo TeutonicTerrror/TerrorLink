@@ -61,7 +61,8 @@ fn base_url(invite: &str) -> Result<Url, String> {
     } else {
         format!("wss://{raw}")
     };
-    let mut url = Url::parse(&with_scheme).map_err(|_| "That invite link isn't valid".to_string())?;
+    let mut url =
+        Url::parse(&with_scheme).map_err(|_| "That invite link isn't valid".to_string())?;
     match url.scheme() {
         "http" => {
             let _ = url.set_scheme("ws");
@@ -98,7 +99,11 @@ fn host_label(url: &Url) -> String {
 async fn preflight(invite: &str) -> Result<(), String> {
     let mut url = base_url(invite)?;
     let host = host_label(&url);
-    let scheme = if url.scheme() == "wss" { "https" } else { "http" };
+    let scheme = if url.scheme() == "wss" {
+        "https"
+    } else {
+        "http"
+    };
     let _ = url.set_scheme(scheme);
     url.set_path("/health");
 
@@ -110,7 +115,9 @@ async fn preflight(invite: &str) -> Result<(), String> {
     let response = match client.get(url.as_str()).send().await {
         Ok(response) => response,
         Err(error) if error.is_timeout() => {
-            return Err(format!("{host} took too long to answer. The host may be offline."))
+            return Err(format!(
+                "{host} took too long to answer. The host may be offline."
+            ))
         }
         Err(error) if error.is_connect() => {
             return Err(format!(
@@ -221,7 +228,8 @@ async fn run(
                         return None;
                     }
                     SessionEnd::Lost => {
-                        let _ = ui.send(ClientEvent::Local("Connection lost. Reconnecting…".into()));
+                        let _ =
+                            ui.send(ClientEvent::Local("Connection lost. Reconnecting…".into()));
                     }
                 }
             }
@@ -291,16 +299,6 @@ fn expand_shortcodes(text: &str) -> String {
     out
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn expands_known_shortcodes_only() {
-        assert_eq!(super::expand_shortcodes("hi :smile:!"), "hi 😄!");
-        assert_eq!(super::expand_shortcodes("at 12:30:thumbsup:"), "at 12:30👍");
-        assert_eq!(super::expand_shortcodes(":nope: https://x.y"), ":nope: https://x.y");
-    }
-}
-
 enum SessionEnd {
     Intentional,
     Lost,
@@ -308,9 +306,8 @@ enum SessionEnd {
     Rejected(String),
 }
 
-type Socket = tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
->;
+type Socket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 async fn session(
     mut socket: Socket,
@@ -372,6 +369,12 @@ async fn session(
                             return SessionEnd::Lost;
                         }
                     }
+                    ClientCommand::Delete { id } => {
+                        let payload = json!({"type": "delete", "id": id});
+                        if socket.send(WsMessage::Text(payload.to_string())).await.is_err() {
+                            return SessionEnd::Lost;
+                        }
+                    }
                     ClientCommand::Ping => {
                         let payload = json!({"type": "ping", "ts": now_ms()});
                         if socket.send(WsMessage::Text(payload.to_string())).await.is_err() {
@@ -385,7 +388,7 @@ async fn session(
                     Some(Ok(WsMessage::Text(text))) => {
                         match serde_json::from_str::<ServerEvent>(&text) {
                             Ok(ServerEvent::Kicked { message }) => {
-                                let _ = ui.send(ClientEvent::Server(ServerEvent::Kicked { message }));
+                                let _ = ui.send(ClientEvent::Server(Box::new(ServerEvent::Kicked { message })));
                                 let _ = socket.close(None).await;
                                 return SessionEnd::Intentional;
                             }
@@ -396,7 +399,7 @@ async fn session(
                                 if matches!(event, ServerEvent::History { .. }) {
                                     joined = true;
                                 }
-                                let _ = ui.send(ClientEvent::Server(event));
+                                let _ = ui.send(ClientEvent::Server(Box::new(event)));
                             }
                             Err(_) => {}
                         }
@@ -421,5 +424,18 @@ async fn session(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn expands_known_shortcodes_only() {
+        assert_eq!(super::expand_shortcodes("hi :smile:!"), "hi 😄!");
+        assert_eq!(super::expand_shortcodes("at 12:30:thumbsup:"), "at 12:30👍");
+        assert_eq!(
+            super::expand_shortcodes(":nope: https://x.y"),
+            ":nope: https://x.y"
+        );
     }
 }

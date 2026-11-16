@@ -43,20 +43,33 @@ fn is_modifier(vk: u32) -> bool {
     matches!(vk, 16 | 17 | 18 | 91 | 92 | 160..=165)
 }
 
+fn apply_modifier(mods: u8, vk: u32, down: bool) -> u8 {
+    if !(160..=165).contains(&vk) {
+        return mods;
+    }
+    let bit = 1 << (vk - 160);
+    if down {
+        mods | bit
+    } else {
+        mods & !bit
+    }
+}
+
 #[cfg(windows)]
 mod hook {
-    use super::{is_modifier, KeyEvent, CAPTURE_KEYS, HOOK_SENDER};
-    use std::sync::atomic::Ordering;
+    use super::{apply_modifier, is_modifier, KeyEvent, CAPTURE_KEYS, HOOK_SENDER};
+    use std::sync::atomic::{AtomicU8, Ordering};
     use std::sync::mpsc::Sender;
     use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM};
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::System::Threading::GetCurrentThreadId;
-    use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
     use windows::Win32::UI::WindowsAndMessaging::{
         CallNextHookEx, DispatchMessageW, GetMessageW, SetWindowsHookExW, TranslateMessage,
-        UnhookWindowsHookEx, HC_ACTION, KBDLLHOOKSTRUCT, LLKHF_INJECTED, MSG, WH_KEYBOARD_LL,
-        WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+        UnhookWindowsHookEx, HC_ACTION, KBDLLHOOKSTRUCT, LLKHF_ALTDOWN, LLKHF_INJECTED, MSG,
+        WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
     };
+
+    static MODIFIERS: AtomicU8 = AtomicU8::new(0);
 
     unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         if code == HC_ACTION as i32 {
@@ -66,13 +79,14 @@ mod hook {
             let up = message == WM_KEYUP || message == WM_SYSKEYUP;
             if down || up {
                 if let Some(sender) = HOOK_SENDER.get() {
-                    let held = |vk: u16| GetAsyncKeyState(vk as i32) as u16 & 0x8000 != 0;
+                    let mods = apply_modifier(MODIFIERS.load(Ordering::SeqCst), info.vkCode, down);
+                    MODIFIERS.store(mods, Ordering::SeqCst);
                     let _ = sender.send(KeyEvent {
                         vk: info.vkCode,
                         down,
-                        ctrl: held(0x11),
-                        shift: held(0x10),
-                        alt: held(0x12),
+                        ctrl: mods & 0b0000_1100 != 0,
+                        shift: mods & 0b0000_0011 != 0,
+                        alt: mods & 0b0011_0000 != 0 || info.flags.0 & LLKHF_ALTDOWN.0 != 0,
                     });
                 }
                 let injected = info.flags.0 & LLKHF_INJECTED.0 != 0;
@@ -134,6 +148,8 @@ pub enum TrayAction {
 }
 
 pub struct Tray {
+    icon_rgba: Vec<u8>,
+    size: u32,
     tray: TrayIcon,
     host_item: MenuItem,
     toggle_item: MenuItem,
@@ -141,8 +157,11 @@ pub struct Tray {
 
 impl Tray {
     pub fn set_hosting(&self, hosting: bool) {
-        self.host_item
-            .set_text(if hosting { "Stop hosting" } else { "Start hosting" });
+        self.host_item.set_text(if hosting {
+            "Stop hosting"
+        } else {
+            "Start hosting"
+        });
         let _ = self.tray.set_tooltip(Some(if hosting {
             "TerrorLink - hosting"
         } else {
@@ -150,13 +169,40 @@ impl Tray {
         }));
     }
 
+    pub fn set_unread(&self, count: u32) {
+        let mut rgba = self.icon_rgba.clone();
+        if count > 0 {
+            let (badge, size) = (unread_badge(count), self.size as usize);
+            for (i, pixel) in badge
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .enumerate()
+                .filter(|(_, pixel)| pixel[3] > 0)
+            {
+                let (x, y) = (size - BADGE + i % BADGE, size - BADGE + i / BADGE);
+                rgba[(y * size + x) * 4..][..4].copy_from_slice(pixel);
+            }
+        }
+        if let Ok(icon) = Icon::from_rgba(rgba, self.size, self.size) {
+            let _ = self.tray.set_icon(Some(icon));
+        }
+    }
+
     pub fn set_window_visible(&self, visible: bool) {
-        self.toggle_item
-            .set_text(if visible { "Hide TerrorLink" } else { "Show TerrorLink" });
+        self.toggle_item.set_text(if visible {
+            "Hide TerrorLink"
+        } else {
+            "Show TerrorLink"
+        });
     }
 }
 
-pub fn create_tray(icon_rgba: Vec<u8>, size: u32, actions: UnboundedSender<TrayAction>) -> Option<Tray> {
+pub fn create_tray(
+    icon_rgba: Vec<u8>,
+    size: u32,
+    actions: UnboundedSender<TrayAction>,
+) -> Option<Tray> {
     let menu = Menu::new();
     let toggle = MenuItem::with_id("toggle", "Hide TerrorLink", true, None);
     let host = MenuItem::with_id("host", "Start hosting", true, None);
@@ -191,7 +237,10 @@ pub fn create_tray(icon_rgba: Vec<u8>, size: u32, actions: UnboundedSender<TrayA
         }
     }));
 
-    let icon = Icon::from_rgba(icon_rgba, size, size).ok()?;
+    if (size as usize) < BADGE {
+        return None;
+    }
+    let icon = Icon::from_rgba(icon_rgba.clone(), size, size).ok()?;
     let tray = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_tooltip("TerrorLink")
@@ -200,10 +249,177 @@ pub fn create_tray(icon_rgba: Vec<u8>, size: u32, actions: UnboundedSender<TrayA
         .build()
         .ok()?;
     Some(Tray {
+        icon_rgba,
+        size,
         tray,
         host_item: host,
         toggle_item: toggle,
     })
+}
+
+const BADGE: usize = 20;
+
+fn unread_badge(count: u32) -> Vec<u8> {
+    const GLYPHS: [u16; 10] = [
+        0b010_110_010_010_111,
+        0b111_001_111_100_111,
+        0b111_001_111_001_111,
+        0b101_101_111_001_001,
+        0b111_100_111_001_111,
+        0b111_100_111_101_111,
+        0b111_001_010_010_010,
+        0b111_101_111_101_111,
+        0b111_101_111_001_111,
+        0b000_010_111_010_000,
+    ];
+    let mut rgba = vec![0u8; BADGE * BADGE * 4];
+    for (i, pixel) in rgba.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        let (dx, dy) = ((i % BADGE) as i32 * 2 - 19, (i / BADGE) as i32 * 2 - 19);
+        if dx * dx + dy * dy <= 400 {
+            pixel.copy_from_slice(&[229, 57, 53, 255]);
+        }
+    }
+    let glyphs: &[usize] = if count > 9 {
+        &[8, 9]
+    } else {
+        &[count.max(1) as usize - 1]
+    };
+    let left = (BADGE - (glyphs.len() * 8 - 2)) / 2;
+    for (n, glyph) in glyphs.iter().enumerate() {
+        for bit in (0..15).filter(|bit| GLYPHS[*glyph] >> (14 - bit) & 1 == 1) {
+            for sub in 0..4 {
+                let (x, y) = (
+                    left + n * 8 + bit % 3 * 2 + sub % 2,
+                    5 + bit / 3 * 2 + sub / 2,
+                );
+                rgba[(y * BADGE + x) * 4..][..4].copy_from_slice(&[255; 4]);
+            }
+        }
+    }
+    rgba
+}
+
+pub fn set_taskbar_unread(raw: isize, count: u32) {
+    #[cfg(windows)]
+    unsafe {
+        use windows::core::w;
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
+        use windows::Win32::UI::Shell::{ITaskbarList3, TaskbarList};
+        use windows::Win32::UI::WindowsAndMessaging::{CreateIcon, DestroyIcon, HICON};
+        let Ok(taskbar) =
+            CoCreateInstance::<_, ITaskbarList3>(&TaskbarList, None, CLSCTX_INPROC_SERVER)
+        else {
+            return;
+        };
+        let _ = taskbar.HrInit();
+        let hwnd = HWND(raw as *mut core::ffi::c_void);
+        let icon = (count > 0)
+            .then(|| {
+                let mut bgra = unread_badge(count);
+                bgra.as_chunks_mut::<4>()
+                    .0
+                    .iter_mut()
+                    .for_each(|pixel| pixel.swap(0, 2));
+                let mask = vec![0u8; BADGE.div_ceil(16) * 2 * BADGE];
+                CreateIcon(
+                    None,
+                    BADGE as i32,
+                    BADGE as i32,
+                    1,
+                    32,
+                    mask.as_ptr(),
+                    bgra.as_ptr(),
+                )
+                .ok()
+            })
+            .flatten();
+        let _ = taskbar.SetOverlayIcon(
+            hwnd,
+            icon.unwrap_or(HICON::default()),
+            w!("Unread messages"),
+        );
+        if let Some(icon) = icon {
+            let _ = DestroyIcon(icon);
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = (raw, count);
+}
+
+pub fn claim_single_instance(wait: bool) -> bool {
+    #[cfg(windows)]
+    unsafe {
+        use windows::core::w;
+        use windows::Win32::Foundation::{
+            GetLastError, ERROR_ALREADY_EXISTS, WAIT_ABANDONED, WAIT_OBJECT_0,
+        };
+        use windows::Win32::System::Threading::{CreateMutexW, WaitForSingleObject};
+        let Ok(mutex) = CreateMutexW(None, true, w!("Local\\TerrorLink-single-instance")) else {
+            return true;
+        };
+        if GetLastError() != ERROR_ALREADY_EXISTS {
+            return true;
+        }
+        wait && matches!(
+            WaitForSingleObject(mutex, 15_000),
+            WAIT_OBJECT_0 | WAIT_ABANDONED
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = wait;
+        true
+    }
+}
+
+pub fn show_already_running() {
+    #[cfg(windows)]
+    unsafe {
+        use windows::core::w;
+        use windows::Win32::System::Threading::{OpenEventW, SetEvent, EVENT_MODIFY_STATE};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            AllowSetForegroundWindow, MessageBoxW, ASFW_ANY, MB_ICONINFORMATION, MB_OK,
+        };
+        if let Ok(event) = OpenEventW(EVENT_MODIFY_STATE, false, w!("Local\\TerrorLink-show")) {
+            let _ = AllowSetForegroundWindow(ASFW_ANY);
+            if SetEvent(event).is_ok() {
+                return;
+            }
+        }
+        MessageBoxW(
+            None,
+            w!("TerrorLink is already running. Look for its icon in the system tray."),
+            w!("TerrorLink"),
+            MB_OK | MB_ICONINFORMATION,
+        );
+    }
+}
+
+pub fn listen_for_second_launch(
+    runtime: &tokio::runtime::Runtime,
+    actions: UnboundedSender<TrayAction>,
+) {
+    #[cfg(windows)]
+    unsafe {
+        use windows::core::w;
+        use windows::Win32::Foundation::WAIT_OBJECT_0;
+        use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject, INFINITE};
+        let Ok(event) = CreateEventW(None, false, false, w!("Local\\TerrorLink-show")) else {
+            return;
+        };
+        let event = event.0 as isize;
+        runtime.spawn_blocking(move || {
+            let event = windows::Win32::Foundation::HANDLE(event as *mut core::ffi::c_void);
+            while WaitForSingleObject(event, INFINITE) == WAIT_OBJECT_0 {
+                if actions.send(TrayAction::Click).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+    #[cfg(not(windows))]
+    let _ = (runtime, actions);
 }
 
 pub fn hwnd_of(window: &gpui::Window) -> isize {
@@ -226,7 +442,7 @@ mod win {
         keybd_event, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VK_MENU,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        BringWindowToTop, GetForegroundWindow, IsIconic, GetWindowThreadProcessId, IsWindowVisible,
+        BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
         SetForegroundWindow, SetWindowPos, ShowWindow, HWND_NOTOPMOST, HWND_TOPMOST,
         SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_RESTORE, SW_SHOWNOACTIVATE,
     };
@@ -288,7 +504,11 @@ mod win {
         unsafe {
             let _ = SetWindowPos(
                 hwnd(raw),
-                Some(if topmost { HWND_TOPMOST } else { HWND_NOTOPMOST }),
+                Some(if topmost {
+                    HWND_TOPMOST
+                } else {
+                    HWND_NOTOPMOST
+                }),
                 0,
                 0,
                 0,
@@ -347,8 +567,8 @@ mod win {
 
 #[cfg(windows)]
 pub use win::{
-    begin_drag, hide as hide_window, is_foreground, is_minimized, is_visible as window_visible, round_corners, set_topmost,
-    show as show_window,
+    begin_drag, hide as hide_window, is_foreground, is_minimized, is_visible as window_visible,
+    round_corners, set_topmost, show as show_window,
 };
 
 #[cfg(not(windows))]
@@ -385,7 +605,8 @@ mod clipboard {
     use windows::core::w;
     use windows::Win32::Foundation::HGLOBAL;
     use windows::Win32::System::DataExchange::{
-        CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard, RegisterClipboardFormatW,
+        CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
+        RegisterClipboardFormatW,
     };
     use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
     use windows::Win32::System::Ole::{CF_DIB, CF_HDROP, CF_UNICODETEXT};
@@ -401,7 +622,8 @@ mod clipboard {
 
     pub fn has_attachment() -> bool {
         available(CF_HDROP.0 as u32)
-            || (!available(CF_UNICODETEXT.0 as u32) && (available(png_format()) || available(CF_DIB.0 as u32)))
+            || (!available(CF_UNICODETEXT.0 as u32)
+                && (available(png_format()) || available(CF_DIB.0 as u32)))
     }
 
     fn bytes(format: u32) -> Option<Vec<u8>> {
@@ -441,7 +663,9 @@ mod clipboard {
         } else if available(png_format()) {
             bytes(png_format()).map(ClipboardAttachment::Png)
         } else {
-            bytes(CF_DIB.0 as u32).and_then(|dib| super::dib_to_png(&dib)).map(ClipboardAttachment::Png)
+            bytes(CF_DIB.0 as u32)
+                .and_then(|dib| super::dib_to_png(&dib))
+                .map(ClipboardAttachment::Png)
         };
         unsafe {
             let _ = CloseClipboard();
@@ -451,7 +675,9 @@ mod clipboard {
 }
 
 #[cfg(windows)]
-pub use clipboard::{has_attachment as clipboard_has_attachment, read_attachment as read_clipboard_attachment};
+pub use clipboard::{
+    has_attachment as clipboard_has_attachment, read_attachment as read_clipboard_attachment,
+};
 
 #[cfg(not(windows))]
 pub fn clipboard_has_attachment() -> bool {
@@ -475,7 +701,11 @@ fn dib_to_png(dib: &[u8]) -> Option<Vec<u8>> {
     } else {
         0
     };
-    let masks = if compression == 3 && header_size == 40 { 12 } else { 0 };
+    let masks = if compression == 3 && header_size == 40 {
+        12
+    } else {
+        0
+    };
     let offset = 14 + header_size + masks + palette * 4;
     let mut bmp = Vec::with_capacity(dib.len() + 14);
     bmp.extend_from_slice(b"BM");
@@ -499,7 +729,11 @@ pub fn play_mention_sound() {
         static WAV: OnceLock<Vec<u8>> = OnceLock::new();
         let wav = WAV.get_or_init(chime);
         unsafe {
-            let _ = PlaySoundW(PCWSTR(wav.as_ptr() as *const u16), None, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+            let _ = PlaySoundW(
+                PCWSTR(wav.as_ptr() as *const u16),
+                None,
+                SND_MEMORY | SND_ASYNC | SND_NODEFAULT,
+            );
         }
     }
 }
@@ -539,6 +773,33 @@ fn chime() -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn modifiers_track_each_side() {
+        let held = super::apply_modifier(0, 162, true);
+        let held = super::apply_modifier(held, 163, true);
+        let held = super::apply_modifier(held, 162, false);
+        assert_eq!(held & 0b1100, 0b1000, "right ctrl still down");
+        assert_eq!(
+            super::apply_modifier(held, 65, true),
+            held,
+            "letters change nothing"
+        );
+        assert_eq!(super::apply_modifier(held, 163, false), 0);
+    }
+
+    #[test]
+    fn unread_badge_draws_a_disc_with_digits() {
+        let pixel =
+            |badge: &[u8], x: usize, y: usize| badge[(y * super::BADGE + x) * 4..][..4].to_vec();
+        let one = super::unread_badge(1);
+        assert_eq!(pixel(&one, 0, 0), [0; 4]);
+        assert_eq!(pixel(&one, 3, 10), [229, 57, 53, 255]);
+        assert_eq!(pixel(&one, 9, 5), [255; 4]);
+        let many = super::unread_badge(250);
+        assert_eq!(many, super::unread_badge(10));
+        assert_ne!(many, super::unread_badge(9));
+    }
+
     #[test]
     fn dib_converts_to_png() {
         let mut dib = Vec::new();

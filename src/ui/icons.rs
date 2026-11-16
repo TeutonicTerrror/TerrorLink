@@ -68,9 +68,7 @@ fn source(path: &str) -> Option<String> {
         "icons/paperclip.svg" => {
             r#"<path d="M20.4 11.6l-8.3 8.3a5.4 5.4 0 0 1-7.7-7.7l8.3-8.3a3.6 3.6 0 0 1 5.1 5.1l-8.3 8.3a1.8 1.8 0 0 1-2.6-2.6l7.7-7.6"/>"#
         }
-        "icons/send.svg" => {
-            r#"<path d="M4.5 12h13M12.5 6l6 6-6 6"/>"#
-        }
+        "icons/send.svg" => r#"<path d="M4.5 12h13M12.5 6l6 6-6 6"/>"#,
         "icons/copy.svg" => {
             r#"<rect x="9" y="9" width="11" height="11" rx="2.5"/><path d="M5 15V6.5A2.5 2.5 0 0 1 7.5 4H15"/>"#
         }
@@ -81,15 +79,11 @@ fn source(path: &str) -> Option<String> {
             r#"<path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4M10 16.5L5.5 12 10 7.5M5.5 12H15"/>"#
         }
         "icons/check.svg" => r#"<path d="M5 12.5l4.5 4.5L19 7.5"/>"#,
-        "icons/download.svg" => {
-            r#"<path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/>"#
-        }
+        "icons/download.svg" => r#"<path d="M12 4v11M7 10.5l5 5 5-5M5 20h14"/>"#,
         "icons/link.svg" => {
             r#"<path d="M10 14a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-6.4-6.4l-1.2 1.2M14 10a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 6.4 6.4l1.2-1.2"/>"#
         }
-        "icons/plug.svg" => {
-            r#"<path d="M9 3v5M15 3v5M6.5 8h11v3.5a5.5 5.5 0 0 1-11 0zM12 17v4"/>"#
-        }
+        "icons/plug.svg" => r#"<path d="M9 3v5M15 3v5M6.5 8h11v3.5a5.5 5.5 0 0 1-11 0zM12 17v4"/>"#,
         "icons/notes.svg" => {
             r#"<rect x="5" y="3" width="14" height="18" rx="2.5"/><path d="M9 8h6M9 12h6M9 16h4"/>"#
         }
@@ -99,9 +93,7 @@ fn source(path: &str) -> Option<String> {
         "icons/refresh.svg" => {
             r#"<path d="M20 11.5A8 8 0 0 0 6 6.5L4 8.5M4 4v4.5h4.5M4 12.5a8 8 0 0 0 14 5l2-2M20 20v-4.5h-4.5"/>"#
         }
-        "icons/reply.svg" => {
-            r#"<path d="M10 6L4.5 11.5 10 17M4.5 11.5H14a6 6 0 0 1 6 6V19"/>"#
-        }
+        "icons/reply.svg" => r#"<path d="M10 6L4.5 11.5 10 17M4.5 11.5H14a6 6 0 0 1 6 6V19"/>"#,
         "icons/keyboard.svg" => {
             r#"<rect x="3" y="6" width="18" height="12" rx="2.5"/><path d="M7 10h.01M11 10h.01M15 10h.01M17 14H7"/>"#
         }

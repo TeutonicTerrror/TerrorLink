@@ -44,7 +44,9 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
 }
 
 fn exe_sibling(extension: &str) -> Option<PathBuf> {
-    std::env::current_exe().ok().map(|exe| exe.with_extension(extension))
+    std::env::current_exe()
+        .ok()
+        .map(|exe| exe.with_extension(extension))
 }
 
 pub fn remove_leftovers() {
@@ -55,9 +57,11 @@ pub fn remove_leftovers() {
     }
 }
 
+pub const RESTART_ARG: &str = "--after-update";
+
 pub fn restart() -> bool {
     std::env::current_exe()
-        .and_then(|exe| std::process::Command::new(exe).spawn())
+        .and_then(|exe| std::process::Command::new(exe).arg(RESTART_ARG).spawn())
         .is_ok()
 }
 
@@ -94,7 +98,9 @@ pub async fn check_and_install() -> Result<Option<String>, String> {
     if !bytes.starts_with(b"MZ") {
         return Err("the download is not a Windows program".into());
     }
-    if !manifest.sha256.is_empty() && !hex::encode(Sha256::digest(&bytes)).eq_ignore_ascii_case(&manifest.sha256) {
+    if !manifest.sha256.is_empty()
+        && !hex::encode(Sha256::digest(&bytes)).eq_ignore_ascii_case(&manifest.sha256)
+    {
         return Err("the download failed its SHA-256 check".into());
     }
     let exe = std::env::current_exe().map_err(|error| error.to_string())?;
@@ -104,7 +110,8 @@ pub async fn check_and_install() -> Result<Option<String>, String> {
         .await
         .map_err(|error| format!("could not save the update: {error}"))?;
     let _ = std::fs::remove_file(&old);
-    std::fs::rename(&exe, &old).map_err(|error| format!("could not replace the program: {error}"))?;
+    std::fs::rename(&exe, &old)
+        .map_err(|error| format!("could not replace the program: {error}"))?;
     if let Err(error) = std::fs::rename(&staged, &exe) {
         let _ = std::fs::rename(&old, &exe);
         return Err(format!("could not install the update: {error}"));

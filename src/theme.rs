@@ -149,7 +149,10 @@ pub fn render_logo_rgba(size: u32) -> Option<Vec<u8>> {
 
 pub fn logo_image(size: u32) -> Option<Arc<gpui::Image>> {
     let png = render_logo(size)?.encode_png().ok()?;
-    Some(Arc::new(gpui::Image::from_bytes(gpui::ImageFormat::Png, png)))
+    Some(Arc::new(gpui::Image::from_bytes(
+        gpui::ImageFormat::Png,
+        png,
+    )))
 }
 
 fn render_logo(size: u32) -> Option<tiny_skia::Pixmap> {

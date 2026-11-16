@@ -28,7 +28,7 @@ impl ConnStatus {
 #[derive(Debug)]
 pub enum ClientEvent {
     Status(ConnStatus),
-    Server(ServerEvent),
+    Server(Box<ServerEvent>),
     Local(String),
 }
 

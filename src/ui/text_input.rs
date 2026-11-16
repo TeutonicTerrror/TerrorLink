@@ -1,12 +1,11 @@
 use std::ops::Range;
 
 use gpui::{
-    actions, anchored, deferred, div, fill, Corner, point, prelude::*, px, relative, size, App, Bounds, ClipboardItem,
-    ContentMask, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
-    EntityInputHandler, FocusHandle, Focusable, GlobalElementId, KeyBinding, LayoutId,
+    actions, anchored, deferred, div, fill, point, prelude::*, px, relative, size, App, Bounds,
+    ClipboardItem, ContentMask, Context, Corner, CursorStyle, ElementId, ElementInputHandler,
+    Entity, EntityInputHandler, FocusHandle, Focusable, GlobalElementId, KeyBinding, LayoutId,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
-    ShapedLine, SharedString, Style, Subscription, TextRun, UTF16Selection, UnderlineStyle,
-    Window,
+    ShapedLine, SharedString, Style, Subscription, TextRun, UTF16Selection, UnderlineStyle, Window,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -235,7 +234,13 @@ impl TextInput {
         let insert = found.swap_remove(index).insert;
         let cursor = self.selected_range.end;
         let end = start + insert.len();
-        self.content = format!("{}{}{}", &self.content[..start], insert, &self.content[cursor..]).into();
+        self.content = format!(
+            "{}{}{}",
+            &self.content[..start],
+            insert,
+            &self.content[cursor..]
+        )
+        .into();
         self.selected_range = end..end;
         self.emoji_pick = 0;
         cx.notify();
@@ -274,7 +279,13 @@ impl TextInput {
             return;
         };
         let end = start + emoji.as_str().len();
-        self.content = format!("{}{}{}", &body[..start], emoji.as_str(), &self.content[cursor..]).into();
+        self.content = format!(
+            "{}{}{}",
+            &body[..start],
+            emoji.as_str(),
+            &self.content[cursor..]
+        )
+        .into();
         self.selected_range = end..end;
     }
 
@@ -444,7 +455,12 @@ impl TextInput {
         self.replace_text_in_range(None, "", window, cx)
     }
 
-    fn on_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         window.focus(&self.focus_handle);
         self.is_selecting = true;
         if event.click_count >= 2 {
@@ -597,9 +613,7 @@ impl TextInput {
         self.content
             .split_word_bound_indices()
             .rev()
-            .find_map(|(idx, word)| {
-                (idx < offset && !word.trim().is_empty()).then_some(idx)
-            })
+            .find_map(|(idx, word)| (idx < offset && !word.trim().is_empty()).then_some(idx))
             .unwrap_or(0)
     }
 
@@ -613,12 +627,16 @@ impl TextInput {
             .unwrap_or(self.content.len())
     }
 
-    fn clamp_insert<'a>(&self, range: &Range<usize>, new_text: &'a str) -> std::borrow::Cow<'a, str> {
+    fn clamp_insert<'a>(
+        &self,
+        range: &Range<usize>,
+        new_text: &'a str,
+    ) -> std::borrow::Cow<'a, str> {
         let Some(max) = self.max_len else {
             return new_text.into();
         };
-        let kept = self.content[..range.start].chars().count()
-            + self.content[range.end..].chars().count();
+        let kept =
+            self.content[..range.start].chars().count() + self.content[range.end..].chars().count();
         let room = max.saturating_sub(kept);
         if new_text.chars().count() <= room {
             new_text.into()
@@ -653,7 +671,11 @@ impl EntityInputHandler for TextInput {
         })
     }
 
-    fn marked_text_range(&self, _window: &mut Window, _cx: &mut Context<Self>) -> Option<Range<usize>> {
+    fn marked_text_range(
+        &self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Range<usize>> {
         self.marked_range
             .as_ref()
             .map(|range| self.range_to_utf16(range))
@@ -743,7 +765,10 @@ impl EntityInputHandler for TextInput {
         let end = range.end.clamp(*start, start + line.text.len());
         Some(Bounds::from_corners(
             point(left + line.x_for_index(range.start - start), top),
-            point(left + line.x_for_index(end - start), top + self.last_line_height),
+            point(
+                left + line.x_for_index(end - start),
+                top + self.last_line_height,
+            ),
         ))
     }
 
@@ -818,7 +843,11 @@ impl Element for TextElement {
         let input = self.input.read(cx);
         let content = input.content.clone();
         let selected_range = input.selected_range.clone();
-        let cursor = if content.is_empty() { 0 } else { input.cursor_offset() };
+        let cursor = if content.is_empty() {
+            0
+        } else {
+            input.cursor_offset()
+        };
         let focused = input.is_focused(window);
         let style = window.text_style();
         let line_height = window.line_height();
@@ -855,9 +884,12 @@ impl Element for TextElement {
                         .filter(|run| run.len > 0)
                         .collect()
                 }
-                _ if input.markdown && !content.is_empty() => {
-                    crate::ui::markdown::editing_runs(text, run(text.len(), false), t.surface_active, t.text_faint)
-                }
+                _ if input.markdown && !content.is_empty() => crate::ui::markdown::editing_runs(
+                    text,
+                    run(text.len(), false),
+                    t.surface_active,
+                    t.text_faint,
+                ),
                 _ => vec![run(text.len(), false)],
             };
             let line = window.text_system().shape_line(
@@ -874,7 +906,10 @@ impl Element for TextElement {
         let cursor_x = lines[row].1.x_for_index(cursor - lines[row].0);
         let cursor_y = line_height * row as f32;
         let margin = px(2.);
-        let widest = lines.iter().map(|(_, l)| l.width).fold(px(0.), |a, b| a.max(b));
+        let widest = lines
+            .iter()
+            .map(|(_, l)| l.width)
+            .fold(px(0.), |a, b| a.max(b));
         let mut scroll_x = if focused { input.scroll_x } else { px(0.) };
         let mut scroll_y = input.scroll_y;
         if focused {
@@ -891,9 +926,13 @@ impl Element for TextElement {
                 scroll_y = cursor_y;
             }
         }
-        scroll_x = scroll_x.min((widest - bounds.size.width + margin).max(px(0.))).max(px(0.));
+        scroll_x = scroll_x
+            .min((widest - bounds.size.width + margin).max(px(0.)))
+            .max(px(0.));
         let total = line_height * lines.len() as f32;
-        scroll_y = scroll_y.min((total - bounds.size.height).max(px(0.))).max(px(0.));
+        scroll_y = scroll_y
+            .min((total - bounds.size.height).max(px(0.)))
+            .max(px(0.));
 
         let left = bounds.left() - scroll_x;
         let top = |row: usize| bounds.top() + line_height * row as f32 - scroll_y;
@@ -916,7 +955,11 @@ impl Element for TextElement {
                 }
                 let a = selected_range.start.max(*start) - start;
                 let b = selected_range.end.min(end) - start;
-                let tail = if selected_range.end > end { px(4.) } else { px(0.) };
+                let tail = if selected_range.end > end {
+                    px(4.)
+                } else {
+                    px(0.)
+                };
                 selections.push(fill(
                     Bounds::from_corners(
                         point(left + line.x_for_index(a), top(i)),
@@ -995,50 +1038,77 @@ impl Render for TextInput {
         let t = theme();
         let focused = self.is_focused(window);
         let bare = self.bare;
-        let suggestions = if focused { self.suggestions().map(|(_, found)| found).unwrap_or_default() } else { Vec::new() };
+        let suggestions = if focused {
+            self.suggestions()
+                .map(|(_, found)| found)
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let pick = self.emoji_pick;
         let popup = (!suggestions.is_empty()).then(|| {
-            deferred(div().absolute().top_0().left_0().child(
-                anchored().anchor(Corner::BottomLeft).offset(point(px(-4.), px(-8.))).child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .min_w(px(200.))
-                        .p(px(4.))
-                        .rounded(px(9.))
-                        .bg(t.bg_raised)
-                        .border_1()
-                        .border_color(t.border_strong)
-                        .shadow(crate::theme::shadow_md())
-                        .children(suggestions.into_iter().enumerate().map(|(i, suggestion)| {
+            deferred(
+                div().absolute().top_0().left_0().child(
+                    anchored()
+                        .anchor(Corner::BottomLeft)
+                        .offset(point(px(-4.), px(-8.)))
+                        .child(
                             div()
-                                .id(("emoji-suggestion", i))
                                 .flex()
-                                .items_center()
-                                .gap(px(8.))
-                                .px(px(8.))
-                                .py(px(3.))
-                                .rounded(px(6.))
-                                .cursor_pointer()
-                                .when(i == pick, |d| d.bg(t.accent_soft))
-                                .hover(|s| s.bg(t.surface_hover))
-                                .when(!suggestion.lead.is_empty(), |d| {
-                                    d.child(div().text_size(px(15.)).child(suggestion.lead))
-                                })
-                                .child(div().text_size(px(11.5)).text_color(t.text_muted).child(suggestion.label))
-                                .when(!suggestion.hint.is_empty(), |d| {
-                                    d.child(div().text_size(px(10.5)).text_color(t.text_faint).child(suggestion.hint))
-                                })
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(move |this, _: &MouseDownEvent, _, cx| {
-                                        cx.stop_propagation();
-                                        this.accept_emoji(i, cx);
-                                    }),
-                                )
-                        })),
+                                .flex_col()
+                                .min_w(px(200.))
+                                .p(px(4.))
+                                .rounded(px(9.))
+                                .bg(t.bg_raised)
+                                .border_1()
+                                .border_color(t.border_strong)
+                                .shadow(crate::theme::shadow_md())
+                                .children(suggestions.into_iter().enumerate().map(
+                                    |(i, suggestion)| {
+                                        div()
+                                            .id(("emoji-suggestion", i))
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(8.))
+                                            .px(px(8.))
+                                            .py(px(3.))
+                                            .rounded(px(6.))
+                                            .cursor_pointer()
+                                            .when(i == pick, |d| d.bg(t.accent_soft))
+                                            .hover(|s| s.bg(t.surface_hover))
+                                            .when(!suggestion.lead.is_empty(), |d| {
+                                                d.child(
+                                                    div().text_size(px(15.)).child(suggestion.lead),
+                                                )
+                                            })
+                                            .child(
+                                                div()
+                                                    .text_size(px(11.5))
+                                                    .text_color(t.text_muted)
+                                                    .child(suggestion.label),
+                                            )
+                                            .when(!suggestion.hint.is_empty(), |d| {
+                                                d.child(
+                                                    div()
+                                                        .text_size(px(10.5))
+                                                        .text_color(t.text_faint)
+                                                        .child(suggestion.hint),
+                                                )
+                                            })
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                cx.listener(
+                                                    move |this, _: &MouseDownEvent, _, cx| {
+                                                        cx.stop_propagation();
+                                                        this.accept_emoji(i, cx);
+                                                    },
+                                                ),
+                                            )
+                                    },
+                                )),
+                        ),
                 ),
-            ))
+            )
             .with_priority(1)
         });
         div()
@@ -1132,10 +1202,18 @@ fn command_matches(before: &str) -> Vec<Suggestion> {
     COMMANDS
         .into_iter()
         .filter_map(|(name, args, hint)| {
-            let insert = if args.is_empty() { name.to_string() } else { format!("{name} ") };
+            let insert = if args.is_empty() {
+                name.to_string()
+            } else {
+                format!("{name} ")
+            };
             (name.starts_with(typed.as_str()) && insert != typed).then(|| Suggestion {
                 lead: "",
-                label: if args.is_empty() { name.to_string() } else { format!("{name} {args}") },
+                label: if args.is_empty() {
+                    name.to_string()
+                } else {
+                    format!("{name} {args}")
+                },
                 hint,
                 insert,
             })
@@ -1146,8 +1224,13 @@ fn command_matches(before: &str) -> Vec<Suggestion> {
 fn emoji_query_in(before: &str) -> Option<(usize, &str)> {
     let start = before.rfind(':')?;
     let code = &before[start + 1..];
-    let boundary = before[..start].chars().next_back().is_none_or(char::is_whitespace);
-    let valid = code.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '+' | '-'));
+    let boundary = before[..start]
+        .chars()
+        .next_back()
+        .is_none_or(char::is_whitespace);
+    let valid = code
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '+' | '-'));
     (boundary && valid && code.len() >= 2).then_some((start, code))
 }
 
@@ -1179,8 +1262,23 @@ mod tests {
 
     #[test]
     fn command_matches_complete_prefixes_only() {
-        let inserts = |text: &str| command_matches(text).into_iter().map(|s| s.insert).collect::<Vec<_>>();
-        assert_eq!(inserts("/"), ["/8ball ", "/coinflip ", "/flip ", "/help", "/notes", "/ping"]);
+        let inserts = |text: &str| {
+            command_matches(text)
+                .into_iter()
+                .map(|s| s.insert)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            inserts("/"),
+            [
+                "/8ball ",
+                "/coinflip ",
+                "/flip ",
+                "/help",
+                "/notes",
+                "/ping"
+            ]
+        );
         assert_eq!(inserts("/he"), ["/help"]);
         assert_eq!(inserts("/8ball"), ["/8ball "]);
         assert!(inserts("/ping").is_empty());

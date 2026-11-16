@@ -166,7 +166,9 @@ pub fn check_update(runtime: &tokio::runtime::Runtime, ui: UnboundedSender<HostE
                 let _ = ui.send(HostEvent::Status("cloudflared is up to date".into()));
             }
             Err(error) => {
-                let _ = ui.send(HostEvent::Error(format!("cloudflared update failed: {error}")));
+                let _ = ui.send(HostEvent::Error(format!(
+                    "cloudflared update failed: {error}"
+                )));
             }
         }
     });
@@ -315,11 +317,7 @@ async fn ensure_latest(ui: &UnboundedSender<HostEvent>) -> anyhow::Result<PathBu
         label: format!("cloudflared {tag} ready"),
     });
     let _ = ui.send(HostEvent::Cloudflared {
-        version: if tag.is_empty() {
-            "latest".into()
-        } else {
-            tag
-        },
+        version: if tag.is_empty() { "latest".into() } else { tag },
         path: binary.display().to_string(),
     });
     Ok(binary)

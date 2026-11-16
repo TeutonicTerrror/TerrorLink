@@ -3,8 +3,8 @@ pub mod markdown;
 pub mod text_input;
 
 use gpui::{
-    div, linear_color_stop, linear_gradient, prelude::*, px, relative, Div, ElementId,
-    FontWeight, Hsla, SharedString, Stateful,
+    div, linear_color_stop, linear_gradient, prelude::*, px, relative, Div, ElementId, FontWeight,
+    Hsla, SharedString, Stateful,
 };
 
 use crate::theme::{glow, name_color, shadow_sm, theme};
@@ -26,7 +26,13 @@ pub fn button(
 ) -> Stateful<Div> {
     let t = theme();
     let (bg, hover_bg, border, fg, hover_fg) = match kind {
-        ButtonKind::Primary => (t.primary, t.primary_hover, t.primary_hover, t.on_primary, t.on_primary),
+        ButtonKind::Primary => (
+            t.primary,
+            t.primary_hover,
+            t.primary_hover,
+            t.on_primary,
+            t.on_primary,
+        ),
         ButtonKind::Secondary => (t.surface, t.surface_hover, t.border, t.text_muted, t.text),
         ButtonKind::Ghost => (
             gpui::transparent_black(),
@@ -35,7 +41,13 @@ pub fn button(
             t.text_muted,
             t.text,
         ),
-        ButtonKind::Danger => (t.danger_soft, t.danger.opacity(0.22), t.danger.opacity(0.4), t.danger, t.danger),
+        ButtonKind::Danger => (
+            t.danger_soft,
+            t.danger.opacity(0.22),
+            t.danger.opacity(0.4),
+            t.danger,
+            t.danger,
+        ),
     };
     let label: SharedString = label.into();
     div()
@@ -77,7 +89,11 @@ pub fn small_button(
 ) -> Stateful<Div> {
     let t = theme();
     let hover_fg = if danger { t.danger } else { t.text };
-    let hover_bg = if danger { t.danger_soft } else { t.surface_active };
+    let hover_bg = if danger {
+        t.danger_soft
+    } else {
+        t.surface_active
+    };
     div()
         .id(id)
         .flex()
@@ -99,10 +115,23 @@ pub fn small_button(
         .child(label.into())
 }
 
-pub fn icon_button(id: impl Into<ElementId>, i: Icon, active: bool, danger_hover: bool) -> Stateful<Div> {
+pub fn icon_button(
+    id: impl Into<ElementId>,
+    i: Icon,
+    active: bool,
+    danger_hover: bool,
+) -> Stateful<Div> {
     let t = theme();
-    let fg = if active { t.accent_strong } else { t.text_muted };
-    let hover_bg = if danger_hover { t.danger_soft } else { t.surface_hover };
+    let fg = if active {
+        t.accent_strong
+    } else {
+        t.text_muted
+    };
+    let hover_bg = if danger_hover {
+        t.danger_soft
+    } else {
+        t.surface_hover
+    };
     let hover_fg = if danger_hover { t.danger } else { t.text };
     div()
         .id(id)
@@ -115,17 +144,22 @@ pub fn icon_button(id: impl Into<ElementId>, i: Icon, active: bool, danger_hover
         .text_color(fg)
         .cursor_pointer()
         .group("icon-button")
-        .when(active, |d| d.bg(t.accent_soft).border_1().border_color(t.border_strong))
+        .when(active, |d| {
+            d.bg(t.accent_soft).border_1().border_color(t.border_strong)
+        })
         .when(!active, move |d| d.hover(move |s| s.bg(hover_bg)))
         .active(|s| s.opacity(0.8))
-        .child(
-            icon(i, 15., fg).when(!active, move |svg| {
-                svg.group_hover("icon-button", move |s| s.text_color(hover_fg))
-            }),
-        )
+        .child(icon(i, 15., fg).when(!active, move |svg| {
+            svg.group_hover("icon-button", move |s| s.text_color(hover_fg))
+        }))
 }
 
-pub fn toggle_row(id: impl Into<ElementId>, label: impl Into<SharedString>, hint: Option<&str>, on: bool) -> Stateful<Div> {
+pub fn toggle_row(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    hint: Option<&str>,
+    on: bool,
+) -> Stateful<Div> {
     let t = theme();
     let track = if on { t.primary } else { t.surface_active };
     let knob = if on { t.on_primary } else { t.text_muted };
@@ -146,7 +180,12 @@ pub fn toggle_row(id: impl Into<ElementId>, label: impl Into<SharedString>, hint
             div()
                 .flex()
                 .flex_col()
-                .child(div().text_size(px(12.)).text_color(t.text).child(label.into()))
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(t.text)
+                        .child(label.into()),
+                )
                 .when_some(hint.map(|h| SharedString::from(h.to_string())), |d, h| {
                     d.child(div().text_size(px(10.5)).text_color(t.text_faint).child(h))
                 }),
@@ -163,8 +202,16 @@ pub fn toggle_row(id: impl Into<ElementId>, label: impl Into<SharedString>, hint
                 .bg(track)
                 .border_1()
                 .border_color(if on { t.primary_hover } else { t.border })
-                .when(on, |d| d.justify_end().shadow(glow(t.primary.opacity(0.4), 6.)))
-                .child(div().size(px(11.)).rounded_full().bg(knob).shadow(shadow_sm())),
+                .when(on, |d| {
+                    d.justify_end().shadow(glow(t.primary.opacity(0.4), 6.))
+                })
+                .child(
+                    div()
+                        .size(px(11.))
+                        .rounded_full()
+                        .bg(knob)
+                        .shadow(shadow_sm()),
+                ),
         )
 }
 

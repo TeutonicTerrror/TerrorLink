@@ -4,22 +4,13 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TextMacro {
     #[serde(default)]
     pub key: String,
     #[serde(default)]
     pub text: String,
-}
-
-impl Default for TextMacro {
-    fn default() -> Self {
-        Self {
-            key: String::new(),
-            text: String::new(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

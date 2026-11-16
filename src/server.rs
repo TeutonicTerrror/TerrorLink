@@ -27,6 +27,8 @@ pub struct ServerHandle {
 
 struct Inner {
     history: VecDeque<Message>,
+    history_bytes: usize,
+    http_rate: (std::time::Instant, u32),
     clients: HashMap<String, Client>,
     settings: HostSettings,
 }
@@ -44,6 +46,8 @@ impl Inner {
     fn new(settings: HostSettings) -> Self {
         Self {
             history: VecDeque::new(),
+            history_bytes: 0,
+            http_rate: (std::time::Instant::now(), 0),
             clients: HashMap::new(),
             settings,
         }
@@ -63,12 +67,54 @@ impl Inner {
     }
 }
 
-const PROFANITY: [&str; 32] = [
-    "asshole", "bastard", "bitch", "bollocks", "bullshit", "cunt", "dickhead", "douchebag",
-    "faggot", "fuck", "goddamn", "jackass", "motherfucker", "nigga", "nigger", "piss", "prick",
-    "pussy", "retard", "shit", "slut", "twat", "wanker", "whore", "cocksucker", "dipshit",
-    "dumbass", "fucker", "fucking", "shithead", "shitty", "sonofabitch",
+const PROFANITY: [&str; 26] = [
+    "asshole",
+    "bastard",
+    "bitch",
+    "bollocks",
+    "bullshit",
+    "cunt",
+    "dickhead",
+    "douchebag",
+    "faggot",
+    "fuck",
+    "goddamn",
+    "jackass",
+    "nigga",
+    "nigger",
+    "piss",
+    "prick",
+    "pussy",
+    "retard",
+    "shit",
+    "slut",
+    "twat",
+    "wanker",
+    "whore",
+    "cocksucker",
+    "dumbass",
+    "sonofabitch",
 ];
+
+const MAX_HISTORY_BYTES: usize = 200 * 1024 * 1024;
+
+fn entry_bytes(entry: &Message) -> usize {
+    entry.text.len()
+        + entry
+            .attachment
+            .as_ref()
+            .and_then(|a| a.data.as_ref())
+            .map_or(0, String::len)
+}
+
+fn rate_exceeded(started: &mut std::time::Instant, count: &mut u32) -> bool {
+    if started.elapsed() > std::time::Duration::from_secs(10) {
+        *started = std::time::Instant::now();
+        *count = 0;
+    }
+    *count += 1;
+    *count > 120
+}
 
 pub fn start(
     runtime: &tokio::runtime::Runtime,
@@ -163,7 +209,10 @@ impl ServerHandle {
             }
             inner.settings = settings.clone();
         }
-        bcast(&self.bus, json!({"type": "host-settings", "data": settings}));
+        bcast(
+            &self.bus,
+            json!({"type": "host-settings", "data": settings}),
+        );
         if !changes.is_empty() {
             self.push_system(&format!("Host: {}", changes.join(", ")));
         }
@@ -250,7 +299,21 @@ async fn health() -> impl IntoResponse {
 }
 
 async fn api_message(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
-    let text = clamp_text(body["text"].as_str().unwrap_or(""));
+    let mut text = clamp_text(body["text"].as_str().unwrap_or(""));
+    {
+        let mut inner = state.inner.lock();
+        let (started, count) = &mut inner.http_rate;
+        if rate_exceeded(started, count) {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(json!({"error": "Too many messages too quickly."})),
+            )
+                .into_response();
+        }
+        if inner.settings.chat_filter {
+            text = filter_text(&text);
+        }
+    }
     if text.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -310,13 +373,29 @@ async fn handle_socket(socket: WebSocket, query: WsQuery, state: AppState) {
         return;
     }
     if version != env!("CARGO_PKG_VERSION") {
-        send_value(&mut sink, json!({"type": "error", "message": VERSION_MISMATCH})).await;
+        send_value(
+            &mut sink,
+            json!({"type": "error", "message": VERSION_MISMATCH}),
+        )
+        .await;
         let _ = sink.close().await;
         return;
     }
 
     let (direct_tx, mut direct_rx) = mpsc::unbounded_channel();
-    let already_online = state.inner.lock().find_client(&username).is_some();
+    let already_online = {
+        let mut inner = state.inner.lock();
+        let taken = inner.find_client(&username).is_some();
+        if !taken {
+            inner.clients.insert(
+                username.clone(),
+                Client {
+                    tx: direct_tx.clone(),
+                },
+            );
+        }
+        taken
+    };
     if already_online {
         send_value(
             &mut sink,
@@ -326,12 +405,6 @@ async fn handle_socket(socket: WebSocket, query: WsQuery, state: AppState) {
         let _ = sink.close().await;
         return;
     }
-    state
-        .inner
-        .lock()
-        .clients
-        .insert(username.clone(), Client { tx: direct_tx.clone() });
-
     let mut bus_rx = state.bus.subscribe();
 
     send_value(
@@ -342,10 +415,17 @@ async fn handle_socket(socket: WebSocket, query: WsQuery, state: AppState) {
 
     let (history, settings) = {
         let inner = state.inner.lock();
-        (inner.history.iter().cloned().collect::<Vec<_>>(), inner.settings.clone())
+        (
+            inner.history.iter().cloned().collect::<Vec<_>>(),
+            inner.settings.clone(),
+        )
     };
     send_value(&mut sink, json!({"type": "history", "data": history})).await;
-    send_value(&mut sink, json!({"type": "host-settings", "data": settings})).await;
+    send_value(
+        &mut sink,
+        json!({"type": "host-settings", "data": settings}),
+    )
+    .await;
 
     let users = {
         let mut inner = state.inner.lock();
@@ -403,12 +483,7 @@ async fn handle_socket(socket: WebSocket, query: WsQuery, state: AppState) {
                             send_value(&mut sink, json!({"type": "error", "message": "Message too large."})).await;
                             break;
                         }
-                        if rate_started.elapsed() > std::time::Duration::from_secs(10) {
-                            rate_started = std::time::Instant::now();
-                            rate_count = 0;
-                        }
-                        rate_count += 1;
-                        if rate_count > 120 {
+                        if rate_exceeded(&mut rate_started, &mut rate_count) {
                             send_value(&mut sink, json!({"type": "error", "message": "Too many messages too quickly."})).await;
                             continue;
                         }
@@ -475,7 +550,10 @@ async fn handle_request(
     let request: ClientRequest = match serde_json::from_str(raw) {
         Ok(request) => request,
         Err(_) => {
-            send_direct(direct, json!({"type": "error", "message": "invalid payload"}));
+            send_direct(
+                direct,
+                json!({"type": "error", "message": "invalid payload"}),
+            );
             return;
         }
     };
@@ -592,7 +670,10 @@ async fn handle_request(
                 id: uuid::Uuid::new_v4().to_string(),
                 kind: "result".into(),
                 from: "Magic8Ball".into(),
-                text: format!("🎱 Magic 8-Ball\n{username} asks: *{question}*\n**{}**", answer_eight_ball()),
+                text: format!(
+                    "🎱 Magic 8-Ball\n{username} asks: *{question}*\n**{}**",
+                    answer_eight_ball()
+                ),
                 ts: now_ms(),
                 ..Default::default()
             };
@@ -600,7 +681,11 @@ async fn handle_request(
             push_entry(&mut inner, &state.bus, entry);
         }
         ClientRequest::Coinflip { message } => {
-            let side = if rand::random::<bool>() { "Heads" } else { "Tails" };
+            let side = if rand::random::<bool>() {
+                "Heads"
+            } else {
+                "Tails"
+            };
             let message = clamp_text(message.trim()).replace('\n', " ");
             let detail = if message.is_empty() {
                 format!("{username} flipped a coin")
@@ -617,6 +702,24 @@ async fn handle_request(
             };
             let mut inner = state.inner.lock();
             push_entry(&mut inner, &state.bus, entry);
+        }
+        ClientRequest::Delete { id } => {
+            let mut inner = state.inner.lock();
+            let Some(entry) = inner.history.iter_mut().find(|entry| {
+                entry.id == id
+                    && entry.from == username
+                    && matches!(entry.kind.as_str(), "text" | "attachment")
+            }) else {
+                return;
+            };
+            let before = entry_bytes(entry);
+            entry.kind = "text".into();
+            entry.text = DELETED_TEXT.into();
+            entry.attachment = None;
+            entry.reply_to = None;
+            let entry = entry.clone();
+            inner.history_bytes = inner.history_bytes - before + entry_bytes(&entry);
+            bcast(&state.bus, json!({"type": "message", "data": entry}));
         }
         ClientRequest::Ping { ts } => {
             send_direct(direct, json!({"type": "pong", "ts": ts}));
@@ -642,12 +745,20 @@ fn push_entry(inner: &mut Inner, bus: &broadcast::Sender<Arc<str>>, mut entry: M
         entry.id = uuid::Uuid::new_v4().to_string();
     }
     entry.id = entry.id.chars().take(80).collect();
+    if inner.history.iter().any(|existing| existing.id == entry.id) {
+        entry.id = uuid::Uuid::new_v4().to_string();
+    }
     if entry.ts == 0 {
         entry.ts = now_ms();
     }
+    inner.history_bytes += entry_bytes(&entry);
     inner.history.push_back(entry.clone());
-    while inner.history.len() > MAX_HISTORY {
-        inner.history.pop_front();
+    while inner.history.len() > MAX_HISTORY
+        || (inner.history_bytes > MAX_HISTORY_BYTES && inner.history.len() > 1)
+    {
+        if let Some(dropped) = inner.history.pop_front() {
+            inner.history_bytes -= entry_bytes(&dropped);
+        }
     }
     let kind = if entry.kind == "system" {
         "system"
@@ -666,7 +777,7 @@ fn filter_text(text: &str) -> String {
 }
 
 fn replace_ci(haystack: &str, needle: &str, replacement: &str) -> String {
-    let lower = haystack.to_lowercase();
+    let lower = haystack.to_ascii_lowercase();
     if !lower.contains(needle) {
         return haystack.to_string();
     }
@@ -687,4 +798,90 @@ fn replace_ci(haystack: &str, needle: &str, replacement: &str) -> String {
     }
     result.push_str(&haystack[last..]);
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state(chat_filter: bool) -> AppState {
+        let settings = HostSettings {
+            chat_filter,
+            ..Default::default()
+        };
+        AppState {
+            inner: Arc::new(Mutex::new(Inner::new(settings))),
+            bus: broadcast::channel(8).0,
+            ui: mpsc::unbounded_channel().0,
+        }
+    }
+
+    #[test]
+    fn filter_survives_non_ascii_text() {
+        assert_eq!(filter_text("İİ SHIT happens"), "İİ █ happens");
+        assert_eq!(filter_text("motherfucking"), "mother█ing");
+        assert_eq!(filter_text("clean"), "clean");
+    }
+
+    #[tokio::test]
+    async fn http_messages_are_filtered_and_rate_limited() {
+        let state = state(true);
+        let post =
+            |text: &'static str| api_message(State(state.clone()), Json(json!({"text": text})));
+        assert_eq!(post("well shit").await.status(), StatusCode::OK);
+        assert_eq!(state.inner.lock().history.back().unwrap().text, "well █");
+        for _ in 0..119 {
+            post("hi").await;
+        }
+        assert_eq!(post("hi").await.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn only_the_author_can_delete_and_ids_cannot_be_reused() {
+        let state = state(false);
+        let direct = mpsc::unbounded_channel().0;
+        let send =
+            |user: &'static str, raw: &'static str| handle_request(&state, user, raw, &direct);
+        send(
+            "ann",
+            r#"{"type":"message","text":"secret","clientId":"m1"}"#,
+        )
+        .await;
+        send(
+            "bob",
+            r#"{"type":"message","text":"overwrite","clientId":"m1"}"#,
+        )
+        .await;
+        send("bob", r#"{"type":"delete","id":"m1"}"#).await;
+        {
+            let inner = state.inner.lock();
+            assert_eq!(inner.history[0].text, "secret");
+            assert_ne!(inner.history[1].id, "m1");
+        }
+        send("ann", r#"{"type":"delete","id":"m1"}"#).await;
+        let inner = state.inner.lock();
+        assert_eq!(inner.history[0].text, DELETED_TEXT);
+        assert_eq!(
+            inner.history_bytes,
+            inner.history.iter().map(entry_bytes).sum::<usize>()
+        );
+    }
+
+    #[test]
+    fn history_is_capped_by_bytes() {
+        let mut inner = Inner::new(HostSettings::default());
+        let bus = broadcast::channel(8).0;
+        let big = Message {
+            attachment: Some(Attachment {
+                data: Some("x".repeat(MAX_HISTORY_BYTES / 2 + 1)),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        for _ in 0..3 {
+            push_entry(&mut inner, &bus, big.clone());
+        }
+        assert_eq!(inner.history.len(), 1);
+        assert_eq!(inner.history_bytes, entry_bytes(&big));
+    }
 }

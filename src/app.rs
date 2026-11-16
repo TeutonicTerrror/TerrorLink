@@ -18,19 +18,19 @@ use crate::config::{self, Config};
 use crate::events::{ClientEvent, ConnStatus, HostEvent};
 use crate::platform::{self, KeyEvent, KeyHook, TrayAction};
 use crate::protocol::{
-    self, Attachment, ClientCommand, HostSettings, Message, ReplyRef, ServerEvent, MAX_ATTACHMENT_BYTES,
-    MAX_HISTORY, MAX_USERNAME_LEN,
+    self, Attachment, ClientCommand, HostSettings, Message, ReplyRef, ServerEvent,
+    MAX_ATTACHMENT_BYTES, MAX_HISTORY, MAX_USERNAME_LEN,
 };
 use crate::server::{self, ServerHandle};
 use crate::theme::{self, glow, name_color, shadow_lg, shadow_md, shadow_sm, theme};
 use crate::tunnel;
-use crate::updater;
 use crate::ui::icons::{icon, Icon};
 use crate::ui::text_input::{Paste, Submit, TextInput};
 use crate::ui::{
     avatar, button, card, icon_button, key_cap, progress_bar, section_label, small_button,
     status_dot, toggle_row, ButtonKind,
 };
+use crate::updater;
 
 actions!(terrorlink, [CloseModal]);
 
@@ -90,8 +90,14 @@ struct Inputs {
 }
 
 const HOTKEY_LABELS: [(&str, &str); 6] = [
-    ("Show / hide window", "A bare key is ignored while you type in a text box"),
-    ("Focus chat input", "Opens the overlay instead when overlay mode is on"),
+    (
+        "Show / hide window",
+        "A bare key is ignored while you type in a text box",
+    ),
+    (
+        "Focus chat input",
+        "Opens the overlay instead when overlay mode is on",
+    ),
     ("Host panel", ""),
     ("Settings", ""),
     ("Copy invite link", ""),
@@ -128,6 +134,7 @@ pub struct TerrorLinkApp {
     gifs: Vec<Gif>,
     gif_status: Option<String>,
     gif_seq: u64,
+    gif_query: String,
     update_ready: Option<String>,
     images: HashMap<String, Option<CachedImage>>,
     toast: Option<(SharedString, u64)>,
@@ -138,6 +145,7 @@ pub struct TerrorLinkApp {
     visible: bool,
     key_state: KeyState,
     last_macro: Instant,
+    unread: u32,
     overlay: OverlayState,
     logo: Option<Arc<Image>>,
     scroll: ScrollHandle,
@@ -146,14 +154,21 @@ pub struct TerrorLinkApp {
 }
 
 impl TerrorLinkApp {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>, config: Config, runtime: Arc<Runtime>) -> Self {
+    pub fn new(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        config: Config,
+        runtime: Arc<Runtime>,
+    ) -> Self {
         let (host_tx, host_rx) = mpsc::unbounded_channel();
         let (client_event_tx, client_rx) = mpsc::unbounded_channel();
         let client_tx = client::spawn(&runtime, client_event_tx);
         let (key_tx, key_rx) = mpsc::unbounded_channel();
         let key_hook = platform::start_key_hook(key_tx);
         let (tray_tx, tray_rx) = mpsc::unbounded_channel();
-        let tray = theme::render_logo_rgba(32).and_then(|rgba| platform::create_tray(rgba, 32, tray_tx));
+        platform::listen_for_second_launch(&runtime, tray_tx.clone());
+        let tray =
+            theme::render_logo_rgba(32).and_then(|rgba| platform::create_tray(rgba, 32, tray_tx));
 
         let mut config = config;
         while config.macros.len() < 5 {
@@ -180,7 +195,12 @@ impl TerrorLinkApp {
                     }
                 })
             };
-            let invite = text("wss://your-room.trycloudflare.com", config.invite.clone(), 512, false);
+            let invite = text(
+                "wss://your-room.trycloudflare.com",
+                config.invite.clone(),
+                512,
+                false,
+            );
             let username = text("username", config.username.clone(), MAX_USERNAME_LEN, false);
             let port = text("8080", config.port.to_string(), 5, false);
             let hotkeys = [
@@ -202,7 +222,14 @@ impl TerrorLinkApp {
             let macro_texts = config
                 .macros
                 .iter()
-                .map(|m| text("Text sent when the key is pressed", m.text.clone(), 500, false))
+                .map(|m| {
+                    text(
+                        "Text sent when the key is pressed",
+                        m.text.clone(),
+                        500,
+                        false,
+                    )
+                })
                 .collect();
             let composer = cx.new(|cx| {
                 TextInput::new(window, cx, "Message the room…", "")
@@ -218,10 +245,9 @@ impl TerrorLinkApp {
                     .max_len(protocol::MAX_TEXT_LEN)
                     .emoji()
             });
-            let notes = cx.new(|cx| {
-                TextInput::new(window, cx, "Write anything…", "").notepad(14)
-            });
-            let gif_search = cx.new(|cx| TextInput::new(window, cx, "Search GIPHY…", "").max_len(100));
+            let notes = cx.new(|cx| TextInput::new(window, cx, "Write anything…", "").notepad(14));
+            let gif_search =
+                cx.new(|cx| TextInput::new(window, cx, "Search GIPHY…", "").max_len(100));
             Inputs {
                 notes,
                 gif_search,
@@ -236,7 +262,7 @@ impl TerrorLinkApp {
             }
         };
 
-        let tasks = vec![
+        let mut tasks = vec![
             Self::listen(window, cx, client_rx, Self::on_client_event),
             Self::listen(window, cx, host_rx, Self::on_host_event),
             Self::listen(window, cx, key_rx, Self::on_key_event),
@@ -248,12 +274,51 @@ impl TerrorLinkApp {
             ..Default::default()
         };
 
-        cx.observe_window_activation(window, |this, window, _| {
-            if !window.is_window_active() {
-                window.focus(&this.focus);
+        tasks.push(cx.spawn_in(window, async move |this, cx| {
+            let mut was_foreground = true;
+            while this.upgrade().is_some() {
+                cx.background_executor()
+                    .timer(Duration::from_millis(150))
+                    .await;
+                let foreground = platform::is_foreground(hwnd);
+                if foreground == was_foreground {
+                    continue;
+                }
+                let applied = this.update_in(cx, |app, window, cx| {
+                    if !foreground {
+                        window.focus(&app.focus);
+                    } else if app.visible {
+                        app.set_unread(0);
+                    }
+                    cx.notify();
+                });
+                if applied.is_ok() {
+                    was_foreground = foreground;
+                }
             }
-        })
-        .detach();
+        }));
+
+        tasks.push(cx.spawn(async move |this, cx| {
+            let mut last_seen = String::new();
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(350))
+                    .await;
+                let Ok(()) = this.update(cx, |app, cx| {
+                    let query = app
+                        .input_text(&app.inputs.gif_search, cx)
+                        .trim()
+                        .to_string();
+                    if query != last_seen {
+                        last_seen = query;
+                    } else if app.page == Page::Gifs && query != app.gif_query {
+                        app.search_gifs(cx);
+                    }
+                }) else {
+                    break;
+                };
+            }
+        }));
 
         let this = cx.entity().downgrade();
         window.on_window_should_close(cx, move |window, cx| {
@@ -291,6 +356,7 @@ impl TerrorLinkApp {
             gifs: Vec::new(),
             gif_status: None,
             gif_seq: 0,
+            gif_query: String::new(),
             update_ready: None,
             images: HashMap::new(),
             toast: None,
@@ -301,6 +367,7 @@ impl TerrorLinkApp {
             visible: true,
             key_state: KeyState::default(),
             last_macro: Instant::now(),
+            unread: 0,
             overlay,
             logo: theme::logo_image(64),
             scroll: ScrollHandle::new(),
@@ -330,12 +397,28 @@ impl TerrorLinkApp {
     ) -> Task<()> {
         cx.spawn_in(window, async move |this, cx| {
             while let Some(event) = rx.recv().await {
-                let updated = this.update_in(cx, |app, window, cx| {
-                    handler(app, event, window, cx);
-                    cx.notify();
-                });
-                if updated.is_err() {
-                    break;
+                let mut event = Some(event);
+                for _ in 0..200 {
+                    if this.upgrade().is_none() {
+                        return;
+                    }
+                    let delivered = this.update_in(cx, |app, window, cx| {
+                        if let Some(event) = event.take() {
+                            handler(app, event, window, cx);
+                        }
+                        cx.notify();
+                    });
+                    if delivered.is_ok() {
+                        break;
+                    }
+                    cx.background_executor()
+                        .timer(Duration::from_millis(15))
+                        .await;
+                }
+                if event.is_some() {
+                    crate::config::append_log(
+                        "dropped an event: the window stayed busy for 3 seconds",
+                    );
                 }
             }
         })
@@ -356,7 +439,10 @@ impl TerrorLinkApp {
             let alive = this.update(cx, |app, cx| match result {
                 Ok(Some(version)) => {
                     app.push_log(format!("[update] installed {version}"));
-                    app.push_toast(format!("TerrorLink {version} installed. Restart to apply it."), cx);
+                    app.push_toast(
+                        format!("TerrorLink {version} installed. Restart to apply it."),
+                        cx,
+                    );
                     app.update_ready = Some(version);
                 }
                 Ok(None) => {}
@@ -365,7 +451,9 @@ impl TerrorLinkApp {
             if installed || alive.is_err() {
                 break;
             }
-            cx.background_executor().timer(Duration::from_secs(6 * 60 * 60)).await;
+            cx.background_executor()
+                .timer(Duration::from_secs(6 * 60 * 60))
+                .await;
         })
         .detach();
     }
@@ -376,7 +464,10 @@ impl TerrorLinkApp {
         if updater::restart() {
             cx.quit();
         } else {
-            self.push_toast("Could not restart. Reopen TerrorLink to finish updating.", cx);
+            self.push_toast(
+                "Could not restart. Reopen TerrorLink to finish updating.",
+                cx,
+            );
         }
     }
 
@@ -429,13 +520,26 @@ impl TerrorLinkApp {
         -offset.y >= max.height - px(48.)
     }
 
-    fn upsert_message(&mut self, message: Message) {
+    fn set_unread(&mut self, unread: u32) {
+        let changed = unread.min(10) != self.unread.min(10);
+        self.unread = unread;
+        if changed {
+            if let Some(tray) = &self.tray {
+                tray.set_unread(unread);
+            }
+            platform::set_taskbar_unread(self.hwnd, unread);
+        }
+    }
+
+    fn upsert_message(&mut self, message: Message) -> bool {
         let stick = self.at_bottom();
-        if let Some(existing) = self
+        let existing = self
             .messages
             .iter_mut()
-            .find(|existing| !message.id.is_empty() && existing.id == message.id)
-        {
+            .find(|existing| !message.id.is_empty() && existing.id == message.id);
+        let new = existing.is_none();
+        if let Some(existing) = existing {
+            self.images.remove(&message.id);
             *existing = message;
         } else {
             self.messages.push(message);
@@ -447,6 +551,7 @@ impl TerrorLinkApp {
         if stick {
             self.scroll.scroll_to_bottom();
         }
+        new
     }
 
     fn copy_text(&mut self, text: &str, cx: &mut Context<Self>) {
@@ -558,7 +663,9 @@ impl TerrorLinkApp {
         self.changelog = None;
         let request = self.runtime.spawn(fetch_release_notes());
         cx.spawn(async move |this, cx| {
-            let result = request.await.unwrap_or_else(|_| Err("Could not load the release notes.".into()));
+            let result = request
+                .await
+                .unwrap_or_else(|_| Err("Could not load the release notes.".into()));
             this.update(cx, |app, cx| {
                 app.changelog = Some(result);
                 cx.notify();
@@ -618,7 +725,7 @@ impl TerrorLinkApp {
             ClientEvent::Local(text) => {
                 self.push_local(text);
             }
-            ClientEvent::Server(event) => self.apply_server_event(event, cx),
+            ClientEvent::Server(event) => self.apply_server_event(*event, cx),
         }
     }
 
@@ -637,9 +744,15 @@ impl TerrorLinkApp {
                 {
                     platform::play_mention_sound();
                 }
+                let theirs = data.from != self.config.username;
+                let unseen = !(self.visible && platform::is_foreground(self.hwnd));
+                if self.upsert_message(data) && theirs && unseen {
+                    self.set_unread(self.unread + 1);
+                }
+            }
+            ServerEvent::System { data } => {
                 self.upsert_message(data);
             }
-            ServerEvent::System { data } => self.upsert_message(data),
             ServerEvent::Users { data } => self.users = data,
             ServerEvent::Error { message } => self.push_local(message),
             ServerEvent::Pong { ts } => {
@@ -682,7 +795,11 @@ impl TerrorLinkApp {
                 self.push_log(format!("[host] cloudflared {version} ({path})"));
             }
             HostEvent::Download { fraction, label } => {
-                self.download = if fraction >= 1.0 { None } else { Some((fraction, label)) };
+                self.download = if fraction >= 1.0 {
+                    None
+                } else {
+                    Some((fraction, label))
+                };
             }
             HostEvent::Error(error) => {
                 self.host_error = Some(error.clone());
@@ -721,18 +838,27 @@ impl TerrorLinkApp {
             self.overlay_key(vk, window, cx);
             return;
         }
-        let (ctrl, shift, alt) = (self.key_state.ctrl, self.key_state.shift, self.key_state.alt);
+        let (ctrl, shift, alt) = (
+            self.key_state.ctrl,
+            self.key_state.shift,
+            self.key_state.alt,
+        );
         let fires = |binding: &str| {
-            (!focused || binding_has_modifier(binding)) && binding_matches(binding, vk, ctrl, shift, alt)
+            (!focused || binding_has_modifier(binding))
+                && binding_matches(binding, vk, ctrl, shift, alt)
         };
 
         let typing = focused && window.focused(cx).is_some_and(|f| f != self.focus);
         let toggle = &self.config.toggle_key;
-        if (!typing || binding_has_modifier(toggle)) && binding_matches(toggle, vk, ctrl, shift, alt) {
+        if (!typing || binding_has_modifier(toggle))
+            && binding_matches(toggle, vk, ctrl, shift, alt)
+        {
             self.toggle_window(window, cx);
             return;
         }
-        let shown = self.visible && platform::window_visible(self.hwnd) && !platform::is_minimized(self.hwnd);
+        let shown = self.visible
+            && platform::window_visible(self.hwnd)
+            && !platform::is_minimized(self.hwnd);
         if !focused && binding_matches(&self.config.focus_key, vk, ctrl, shift, alt) {
             if !shown && !self.config.focus_when_hidden {
                 return;
@@ -747,12 +873,20 @@ impl TerrorLinkApp {
             return;
         }
         if fires(&self.config.host_panel_key) {
-            let page = if focused && self.page == Page::Host { Page::Chat } else { Page::Host };
+            let page = if focused && self.page == Page::Host {
+                Page::Chat
+            } else {
+                Page::Host
+            };
             self.open_page(page, window, cx);
             return;
         }
         if fires(&self.config.settings_key) {
-            let page = if focused && self.page == Page::Settings { Page::Chat } else { Page::Settings };
+            let page = if focused && self.page == Page::Settings {
+                Page::Chat
+            } else {
+                Page::Settings
+            };
             self.open_page(page, window, cx);
             return;
         }
@@ -775,7 +909,11 @@ impl TerrorLinkApp {
             }
             return;
         }
-        let macros_allowed = if focused { !typing } else { self.config.macros_unfocused };
+        let macros_allowed = if focused {
+            !typing
+        } else {
+            self.config.macros_unfocused
+        };
         if macros_allowed && !ctrl && !alt {
             if let Some(text) = self.macro_text(vk) {
                 if !self.status.connected() {
@@ -793,7 +931,11 @@ impl TerrorLinkApp {
     }
 
     fn overlay_key(&mut self, vk: u32, window: &mut Window, cx: &mut Context<Self>) {
-        let (ctrl, shift, alt) = (self.key_state.ctrl, self.key_state.shift, self.key_state.alt);
+        let (ctrl, shift, alt) = (
+            self.key_state.ctrl,
+            self.key_state.shift,
+            self.key_state.alt,
+        );
         if vk == 27 || binding_matches(&self.config.toggle_key, vk, ctrl, shift, alt) {
             self.deactivate_overlay(window, cx);
             return;
@@ -833,7 +975,9 @@ impl TerrorLinkApp {
                     self.overlay.buffer.clear();
                     self.overlay.select_all = false;
                 }
-                self.overlay.buffer.push_str(&text.replace(['\r', '\n'], " "));
+                self.overlay
+                    .buffer
+                    .push_str(&text.replace(['\r', '\n'], " "));
             }
             return;
         }
@@ -911,8 +1055,17 @@ impl TerrorLinkApp {
             chat_filter: self.config.chat_filter,
         };
         self.host_settings = settings.clone();
-        self.server = Some(server::start(&self.runtime, self.config.port, settings, self.host_tx.clone()));
-        self.tunnel_stop = Some(tunnel::start(&self.runtime, self.config.port, self.host_tx.clone()));
+        self.server = Some(server::start(
+            &self.runtime,
+            self.config.port,
+            settings,
+            self.host_tx.clone(),
+        ));
+        self.tunnel_stop = Some(tunnel::start(
+            &self.runtime,
+            self.config.port,
+            self.host_tx.clone(),
+        ));
         self.push_log(format!("[host] starting on port {}", self.config.port));
         cx.notify();
     }
@@ -941,7 +1094,10 @@ impl TerrorLinkApp {
 
     fn connect(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let url = self.input_text(&self.inputs.invite, cx).trim().to_string();
-        let username = self.input_text(&self.inputs.username, cx).trim().to_string();
+        let username = self
+            .input_text(&self.inputs.username, cx)
+            .trim()
+            .to_string();
         if url.is_empty() {
             self.push_toast("Paste an invite link first", cx);
             window.focus(&self.inputs.invite.focus_handle(cx));
@@ -960,16 +1116,22 @@ impl TerrorLinkApp {
         self.images.clear();
         self.users.clear();
         self.status = ConnStatus::Connecting;
-        let _ = self.client_tx.send(ClientCommand::Connect { url, username });
+        let _ = self
+            .client_tx
+            .send(ClientCommand::Connect { url, username });
         self.page = Page::Chat;
         cx.notify();
     }
 
     fn join_local(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let local = format!("ws://127.0.0.1:{}", self.config.port);
-        self.inputs.invite.update(cx, |input, cx| input.set_text(local, cx));
+        self.inputs
+            .invite
+            .update(cx, |input, cx| input.set_text(local, cx));
         if self.input_text(&self.inputs.username, cx).trim().is_empty() {
-            self.inputs.username.update(cx, |input, cx| input.set_text("host", cx));
+            self.inputs
+                .username
+                .update(cx, |input, cx| input.set_text("host", cx));
         }
         self.connect(window, cx);
     }
@@ -987,7 +1149,9 @@ impl TerrorLinkApp {
 
     fn handle_command(&mut self, text: &str, cx: &mut Context<Self>) -> bool {
         let trimmed = text.trim();
-        let (name, rest) = trimmed.split_once(char::is_whitespace).unwrap_or((trimmed, ""));
+        let (name, rest) = trimmed
+            .split_once(char::is_whitespace)
+            .unwrap_or((trimmed, ""));
         match name {
             "/8ball" => {
                 if rest.trim().is_empty() {
@@ -1032,11 +1196,17 @@ impl TerrorLinkApp {
     }
 
     fn send_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let text = self.input_text(&self.inputs.composer, cx).trim().to_string();
+        let text = self
+            .input_text(&self.inputs.composer, cx)
+            .trim()
+            .to_string();
         if text.is_empty() && self.pending_attachment.is_none() {
             return;
         }
-        if text.starts_with('/') && self.pending_attachment.is_none() && self.handle_command(&text, cx) {
+        if text.starts_with('/')
+            && self.pending_attachment.is_none()
+            && self.handle_command(&text, cx)
+        {
             self.inputs.composer.update(cx, |input, cx| input.clear(cx));
             if self.page == Page::Notes {
                 window.focus(&self.inputs.notes.focus_handle(cx));
@@ -1061,14 +1231,19 @@ impl TerrorLinkApp {
     }
 
     fn send_broadcast(&mut self, cx: &mut Context<Self>) {
-        let text = self.input_text(&self.inputs.broadcast, cx).trim().to_string();
+        let text = self
+            .input_text(&self.inputs.broadcast, cx)
+            .trim()
+            .to_string();
         if text.is_empty() {
             return;
         }
         match &self.server {
             Some(server) => {
                 server.send_system(&text);
-                self.inputs.broadcast.update(cx, |input, cx| input.clear(cx));
+                self.inputs
+                    .broadcast
+                    .update(cx, |input, cx| input.clear(cx));
             }
             None => self.push_toast("Start hosting to broadcast", cx),
         }
@@ -1118,7 +1293,10 @@ impl TerrorLinkApp {
                 }
             }
             Some(platform::ClipboardAttachment::Png(bytes)) => {
-                let name = format!("pasted-{}.png", chrono::Local::now().format("%Y%m%d-%H%M%S"));
+                let name = format!(
+                    "pasted-{}.png",
+                    chrono::Local::now().format("%Y%m%d-%H%M%S")
+                );
                 self.attach_bytes(name, bytes, cx);
             }
             None => self.push_toast("Nothing on the clipboard to attach", cx),
@@ -1136,12 +1314,18 @@ impl TerrorLinkApp {
     fn search_gifs(&mut self, cx: &mut Context<Self>) {
         self.gif_seq += 1;
         let seq = self.gif_seq;
-        let query = self.input_text(&self.inputs.gif_search, cx).trim().to_string();
+        let query = self
+            .input_text(&self.inputs.gif_search, cx)
+            .trim()
+            .to_string();
+        self.gif_query = query.clone();
         self.gif_status = Some("Loading GIFs…".into());
         cx.notify();
         let request = self.runtime.spawn(fetch_gifs(query));
         cx.spawn(async move |this, cx| {
-            let result = request.await.unwrap_or_else(|_| Err("GIF search failed.".into()));
+            let result = request
+                .await
+                .unwrap_or_else(|_| Err("GIF search failed.".into()));
             this.update(cx, |app, cx| {
                 if app.gif_seq != seq {
                     return;
@@ -1170,10 +1354,11 @@ impl TerrorLinkApp {
     }
 
     fn send_gif(&mut self, url: String, window: &mut Window, cx: &mut Context<Self>) {
-        self.push_toast("Adding GIF…", cx);
         let request = self.runtime.spawn(download_gif(url));
         cx.spawn_in(window, async move |this, cx| {
-            let result = request.await.unwrap_or_else(|_| Err("Could not download that GIF".into()));
+            let result = request
+                .await
+                .unwrap_or_else(|_| Err("Could not download that GIF".into()));
             this.update_in(cx, |app, window, cx| match result {
                 Ok(bytes) => {
                     app.attach_bytes("giphy.gif".into(), bytes, cx);
@@ -1215,41 +1400,40 @@ impl TerrorLinkApp {
     }
 
     fn save_attachment(&mut self, attachment: &Attachment, cx: &mut Context<Self>) {
-        let Some((_, payload)) = attachment.data.as_ref().and_then(|data| data.split_once(',')) else {
-            return;
-        };
-        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(payload.trim()) else {
-            self.push_toast("Could not decode attachment", cx);
-            return;
-        };
-        let name = attachment.name.clone().unwrap_or_else(|| "attachment.bin".into());
-        let safe: String = name
-            .chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ' ') {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect();
-        let safe = if safe.trim().is_empty() { "attachment.bin".to_string() } else { safe };
         let directory = dirs::download_dir().unwrap_or_else(|| PathBuf::from("."));
-        let path = directory.join(safe);
-        match std::fs::write(&path, &bytes) {
-            Ok(_) => self.push_toast(format!("Saved to {}", path.display()), cx),
-            Err(error) => self.push_toast(format!("Save failed: {error}"), cx),
+        match write_attachment(attachment, directory) {
+            Ok(path) => self.push_toast(format!("Saved to {}", path.display()), cx),
+            Err(error) => self.push_toast(error, cx),
         }
     }
 
-    fn ensure_images(&mut self) {
-        for message in &self.messages {
+    fn play_attachment(&mut self, attachment: &Attachment, cx: &mut Context<Self>) {
+        let played = write_attachment(attachment, std::env::temp_dir().join("TerrorLink"))
+            .and_then(|path| {
+                if !is_video(&path.to_string_lossy()) {
+                    return Err("Not a video file".into());
+                }
+                open::that(&path).map_err(|error| format!("Could not open the video: {error}"))
+            });
+        if let Err(error) = played {
+            self.push_toast(error, cx);
+        }
+    }
+
+    fn ensure_images(&mut self) -> bool {
+        let mut budget = 4;
+        for message in self.messages.iter().rev() {
             if message.attachment.is_none() || self.images.contains_key(&message.id) {
                 continue;
             }
+            if budget == 0 {
+                return true;
+            }
+            budget -= 1;
             let decoded = message.attachment.as_ref().and_then(decode_image);
             self.images.insert(message.id.clone(), decoded);
         }
+        false
     }
 
     fn set_room_setting(&mut self, update: impl FnOnce(&mut HostSettings), cx: &mut Context<Self>) {
@@ -1294,8 +1478,13 @@ impl TerrorLinkApp {
             _ => note = "Saved, but the port must be 1024 to 65535".into(),
         }
         let port_text = self.config.port.to_string();
-        self.inputs.port.update(cx, |input, cx| input.set_text(port_text, cx));
-        self.config.username = self.input_text(&self.inputs.username, cx).trim().to_string();
+        self.inputs
+            .port
+            .update(cx, |input, cx| input.set_text(port_text, cx));
+        self.config.username = self
+            .input_text(&self.inputs.username, cx)
+            .trim()
+            .to_string();
         self.config.invite = self.input_text(&self.inputs.invite, cx).trim().to_string();
         self.config.save();
         if self.hosting {
@@ -1332,16 +1521,20 @@ impl Focusable for TerrorLinkApp {
 impl Render for TerrorLinkApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme();
-        self.ensure_images();
+        if self.ensure_images() {
+            cx.notify();
+        }
         let root = div()
             .id("root")
             .key_context("TerrorLink")
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::close_modal))
             .on_action(cx.listener(|this, _: &Paste, _, cx| this.paste_attachment(cx)))
-            .on_action(cx.listener(|this, _: &crate::ui::text_input::Escape, window, cx| {
-                this.close_modal(&CloseModal, window, cx)
-            }))
+            .on_action(
+                cx.listener(|this, _: &crate::ui::text_input::Escape, window, cx| {
+                    this.close_modal(&CloseModal, window, cx)
+                }),
+            )
             .relative()
             .size_full()
             .flex()
@@ -1372,7 +1565,8 @@ impl Render for TerrorLinkApp {
 
         let header = self.render_header(window, cx).into_any_element();
         let body = self.render_body(window, cx).into_any_element();
-        let modal = (self.page != Page::Chat).then(|| self.render_modal(window, cx).into_any_element());
+        let modal =
+            (self.page != Page::Chat).then(|| self.render_modal(window, cx).into_any_element());
         root.on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
             if let Some(path) = paths.paths().first() {
                 this.attach_path(path.clone(), cx);
@@ -1384,7 +1578,9 @@ impl Render for TerrorLinkApp {
         .when_some(self.expanded_image.clone(), |d, (image, w, h)| {
             d.child(render_image_viewer(image, w, h, window, cx))
         })
-        .when_some(self.toast.clone(), |d, (text, id)| d.child(render_toast(text, id)))
+        .when_some(self.toast.clone(), |d, (text, id)| {
+            d.child(render_toast(text, id))
+        })
         .into_any_element()
     }
 }
@@ -1438,7 +1634,12 @@ impl TerrorLinkApp {
                             .items_baseline()
                             .gap(px(5.))
                             .line_height(px(16.))
-                            .child(div().text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).child("TerrorLink"))
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("TerrorLink"),
+                            )
                             .child(
                                 div()
                                     .text_size(px(10.))
@@ -1475,9 +1676,15 @@ impl TerrorLinkApp {
             .gap(px(2.))
             .when(self.update_ready.is_some(), |d| {
                 d.child(
-                    small_button("restart-update", "Restart to update", Some(Icon::Refresh), false).on_click(
-                        cx.listener(|this, _: &ClickEvent, window, cx| this.restart_for_update(window, cx)),
-                    ),
+                    small_button(
+                        "restart-update",
+                        "Restart to update",
+                        Some(Icon::Refresh),
+                        false,
+                    )
+                    .on_click(cx.listener(
+                        |this, _: &ClickEvent, window, cx| this.restart_for_update(window, cx),
+                    )),
                 )
             })
             .child(
@@ -1504,12 +1711,15 @@ impl TerrorLinkApp {
                 div()
                     .relative()
                     .child(
-                        icon_button("host", Icon::Broadcast, self.page == Page::Host, false).on_click(
-                            cx.listener(|this, _: &ClickEvent, window, cx| {
-                                let page = if this.page == Page::Host { Page::Chat } else { Page::Host };
+                        icon_button("host", Icon::Broadcast, self.page == Page::Host, false)
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                let page = if this.page == Page::Host {
+                                    Page::Chat
+                                } else {
+                                    Page::Host
+                                };
                                 this.open_page(page, window, cx);
-                            }),
-                        ),
+                            })),
                     )
                     .when(self.hosting, |d| {
                         d.child(
@@ -1526,21 +1736,31 @@ impl TerrorLinkApp {
                     }),
             )
             .child(
-                icon_button("settings", Icon::Settings, self.page == Page::Settings, false).on_click(
-                    cx.listener(|this, _: &ClickEvent, window, cx| {
-                        let page = if this.page == Page::Settings { Page::Chat } else { Page::Settings };
-                        this.open_page(page, window, cx);
-                    }),
-                ),
+                icon_button(
+                    "settings",
+                    Icon::Settings,
+                    self.page == Page::Settings,
+                    false,
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                    let page = if this.page == Page::Settings {
+                        Page::Chat
+                    } else {
+                        Page::Settings
+                    };
+                    this.open_page(page, window, cx);
+                })),
             )
             .child(div().w(px(1.)).h(px(16.)).mx(px(4.)).bg(t.border))
             .child(
-                icon_button("minimize", Icon::Minimize, false, false)
-                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.hide(window, cx))),
+                icon_button("minimize", Icon::Minimize, false, false).on_click(
+                    cx.listener(|this, _: &ClickEvent, window, cx| this.hide(window, cx)),
+                ),
             )
             .child(
-                icon_button("close", Icon::Close, false, true)
-                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.hide(window, cx))),
+                icon_button("close", Icon::Close, false, true).on_click(
+                    cx.listener(|this, _: &ClickEvent, window, cx| this.hide(window, cx)),
+                ),
             );
 
         div()
@@ -1558,7 +1778,10 @@ impl TerrorLinkApp {
     }
 
     fn render_body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if !matches!(self.status, ConnStatus::Connected | ConnStatus::Reconnecting(_)) {
+        if !matches!(
+            self.status,
+            ConnStatus::Connected | ConnStatus::Reconnecting(_)
+        ) {
             return div()
                 .id("connect-screen")
                 .flex()
@@ -1573,7 +1796,13 @@ impl TerrorLinkApp {
                 .child(self.render_connect(cx))
                 .into_any_element();
         }
-        let body = div().flex().flex_col().flex_1().min_h(px(0.)).gap(px(8.)).p(px(10.));
+        let body = div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h(px(0.))
+            .gap(px(8.))
+            .p(px(10.));
         body.child(self.render_messages(cx))
             .child(self.render_composer(window, cx))
             .into_any_element()
@@ -1581,7 +1810,10 @@ impl TerrorLinkApp {
 
     fn render_connect(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme();
-        let busy = matches!(self.status, ConnStatus::Connecting | ConnStatus::Reconnecting(_));
+        let busy = matches!(
+            self.status,
+            ConnStatus::Connecting | ConnStatus::Reconnecting(_)
+        );
         let failure = match &self.status {
             ConnStatus::Failed(reason) => Some(reason.clone()),
             _ => None,
@@ -1631,13 +1863,21 @@ impl TerrorLinkApp {
                     .flex()
                     .items_center()
                     .gap(px(6.))
-                    .child(div().flex_1().min_w(px(0.)).child(self.inputs.username.clone()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .child(self.inputs.username.clone()),
+                    )
                     .child(if busy {
-                        button("connect", "Cancel", ButtonKind::Secondary, None)
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.disconnect(cx)))
+                        button("connect", "Cancel", ButtonKind::Secondary, None).on_click(
+                            cx.listener(|this, _: &ClickEvent, _, cx| this.disconnect(cx)),
+                        )
                     } else {
                         button("connect", "Connect", ButtonKind::Primary, Some(Icon::Plug))
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.connect(window, cx)))
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                this.connect(window, cx)
+                            }))
                     }),
             )
             .child(match failure {
@@ -1667,9 +1907,16 @@ impl TerrorLinkApp {
                     .child(divider()),
             )
             .child(
-                button("host-instead", "Host your own room", ButtonKind::Secondary, Some(Icon::Broadcast))
-                    .w_full()
-                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.open_page(Page::Host, window, cx))),
+                button(
+                    "host-instead",
+                    "Host your own room",
+                    ButtonKind::Secondary,
+                    Some(Icon::Broadcast),
+                )
+                .w_full()
+                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                    this.open_page(Page::Host, window, cx)
+                })),
             )
     }
 
@@ -1687,7 +1934,10 @@ impl TerrorLinkApp {
         let (title, hint) = if self.status.connected() {
             ("No messages yet", "Say hello to the room")
         } else {
-            ("You're not in a room", "Join with an invite link, or host your own")
+            (
+                "You're not in a room",
+                "Join with an invite link, or host your own",
+            )
         };
         div()
             .id("messages")
@@ -1722,8 +1972,18 @@ impl TerrorLinkApp {
                                 .border_color(t.border_strong)
                                 .child(icon(Icon::Link, 16., t.accent)),
                         )
-                        .child(div().text_size(px(12.5)).text_color(t.text_muted).child(title))
-                        .child(div().text_size(px(11.)).text_color(t.text_faint).child(hint)),
+                        .child(
+                            div()
+                                .text_size(px(12.5))
+                                .text_color(t.text_muted)
+                                .child(title),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.))
+                                .text_color(t.text_faint)
+                                .child(hint),
+                        ),
                 )
             })
             .children(rows)
@@ -1740,7 +2000,10 @@ impl TerrorLinkApp {
     ) -> AnyElement {
         let t = theme();
         if message.kind == "result" {
-            let (title, body) = message.text.split_once('\n').unwrap_or((message.text.as_str(), ""));
+            let (title, body) = message
+                .text
+                .split_once('\n')
+                .unwrap_or((message.text.as_str(), ""));
             return div()
                 .flex()
                 .justify_center()
@@ -1795,7 +2058,10 @@ impl TerrorLinkApp {
 
         let standalone = |m: &Message| m.kind == "system" || m.kind == "result";
         let same_group = |a: &Message, b: &Message| {
-            !standalone(a) && !standalone(b) && a.from == b.from && (b.ts - a.ts).abs() < 5 * 60 * 1000
+            !standalone(a)
+                && !standalone(b)
+                && a.from == b.from
+                && (b.ts - a.ts).abs() < 5 * 60 * 1000
         };
         let first = prev.map(|p| !same_group(p, message)).unwrap_or(true);
         let last = next.map(|n| !same_group(message, n)).unwrap_or(true);
@@ -1809,15 +2075,18 @@ impl TerrorLinkApp {
                     let scale = (230.0 / image.width).min(170.0 / image.height).min(1.0);
                     let full = (image.image.clone(), image.width, image.height);
                     div()
-                        .id(SharedString::from(format!("image-{index}")))
+                        .id(SharedString::from(format!("image-{}", message.id)))
                         .when(self.config.image_expand, |d| {
-                            d.cursor_pointer().on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                this.expanded_image = Some(full.clone());
-                                cx.notify();
-                            }))
+                            d.cursor_pointer().on_click(cx.listener(
+                                move |this, _: &ClickEvent, _, cx| {
+                                    this.expanded_image = Some(full.clone());
+                                    cx.notify();
+                                },
+                            ))
                         })
                         .child(
                             img(image.image.clone())
+                                .id("img")
                                 .w(px(image.width * scale))
                                 .h(px(image.height * scale))
                                 .rounded(px(8.)),
@@ -1825,8 +2094,25 @@ impl TerrorLinkApp {
                         .into_any_element()
                 }
                 None => {
-                    let name = attachment.name.clone().unwrap_or_else(|| "attachment".into());
+                    let name = attachment
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| "attachment".into());
                     let id = SharedString::from(format!("save-{index}"));
+                    let play = (attachment.data.is_some() && is_video(&name)).then(|| {
+                        let attachment = attachment.clone();
+                        small_button(
+                            SharedString::from(format!("play-{index}")),
+                            "Play",
+                            None,
+                            true,
+                        )
+                        .on_click(cx.listener(
+                            move |this, _: &ClickEvent, _, cx| {
+                                this.play_attachment(&attachment, cx)
+                            },
+                        ))
+                    });
                     let action = if attachment.data.is_some() {
                         small_button(id, "Save", Some(Icon::Download), false)
                             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -1851,7 +2137,14 @@ impl TerrorLinkApp {
                         .border_1()
                         .border_color(t.border)
                         .child(icon(Icon::Paperclip, 12., t.text_muted))
-                        .child(div().truncate().max_w(px(160.)).text_size(px(11.5)).child(name))
+                        .child(
+                            div()
+                                .truncate()
+                                .max_w(px(160.))
+                                .text_size(px(11.5))
+                                .child(name),
+                        )
+                        .children(play)
                         .child(action)
                         .into_any_element()
                 }
@@ -1882,7 +2175,12 @@ impl TerrorLinkApp {
                     .when(last, |d| d.rounded_br(px(4.)))
                     .when(!first, |d| d.rounded_tr(px(6.)))
                 } else {
-                    d.bg(if mentioned { t.accent_soft } else { t.bubble_other }.opacity(bubble_opacity))
+                    d.bg(if mentioned {
+                        t.accent_soft
+                    } else {
+                        t.bubble_other
+                    }
+                    .opacity(bubble_opacity))
                         .border_1()
                         .border_color(if mentioned { t.accent } else { t.border })
                         .shadow(shadow_sm())
@@ -1920,7 +2218,11 @@ impl TerrorLinkApp {
             })
             .when_some(attachment, |d, a| d.child(a))
             .when(has_text, |d| {
-                let code_bg = if own { gpui::black().opacity(0.25) } else { t.surface_active };
+                let code_bg = if own {
+                    gpui::black().opacity(0.25)
+                } else {
+                    t.surface_active
+                };
                 d.child(crate::ui::markdown::render(&message.text, code_bg))
             });
 
@@ -1939,7 +2241,12 @@ impl TerrorLinkApp {
                         .text_color(name_color(&message.from))
                         .child(message.from.clone()),
                 )
-                .child(div().text_size(px(10.)).text_color(t.text_faint).child(time.clone()))
+                .child(
+                    div()
+                        .text_size(px(10.))
+                        .text_color(t.text_faint)
+                        .child(time.clone()),
+                )
         });
 
         let group = SharedString::from(format!("message-{index}"));
@@ -1948,14 +2255,39 @@ impl TerrorLinkApp {
             from: message.from.clone(),
             preview: protocol::reply_preview(message),
         };
-        let reply_button = icon_button(SharedString::from(format!("reply-{index}")), Icon::Reply, false, false)
+        let reply_button = icon_button(
+            SharedString::from(format!("reply-{index}")),
+            Icon::Reply,
+            false,
+            false,
+        )
+        .invisible()
+        .group_hover(group.clone(), |style| style.visible())
+        .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+            this.replying_to = Some(reply_ref.clone());
+            window.focus(&this.inputs.composer.focus_handle(cx));
+            cx.notify();
+        }));
+
+        let deletable = own
+            && matches!(message.kind.as_str(), "text" | "attachment")
+            && message.text != protocol::DELETED_TEXT;
+        let delete_button = deletable.then(|| {
+            let id = message.id.clone();
+            icon_button(
+                SharedString::from(format!("delete-{index}")),
+                Icon::Trash,
+                false,
+                true,
+            )
             .invisible()
             .group_hover(group.clone(), |style| style.visible())
-            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                this.replying_to = Some(reply_ref.clone());
-                window.focus(&this.inputs.composer.focus_handle(cx));
-                cx.notify();
-            }));
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, _| {
+                let _ = this
+                    .client_tx
+                    .send(ClientCommand::Delete { id: id.clone() });
+            }))
+        });
 
         let row = if own {
             div()
@@ -1964,6 +2296,7 @@ impl TerrorLinkApp {
                 .items_center()
                 .justify_end()
                 .gap(px(4.))
+                .children(delete_button)
                 .child(reply_button)
                 .child(bubble)
         } else {
@@ -1992,7 +2325,8 @@ impl TerrorLinkApp {
 
     fn render_composer(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme();
-        let focused = self.inputs.composer.focus_handle(cx).is_focused(window) && window.is_window_active();
+        let focused =
+            self.inputs.composer.focus_handle(cx).is_focused(window) && window.is_window_active();
         let enabled = self.status.connected();
         div()
             .flex()
@@ -2021,12 +2355,11 @@ impl TerrorLinkApp {
                                 .child(format!("Replying to {}: {}", reply.from, reply.preview)),
                         )
                         .child(
-                            small_button("cancel-reply", "Cancel", Some(Icon::Close), true).on_click(
-                                cx.listener(|this, _: &ClickEvent, _, cx| {
+                            small_button("cancel-reply", "Cancel", Some(Icon::Close), true)
+                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                     this.replying_to = None;
                                     cx.notify();
-                                }),
-                            ),
+                                })),
                         ),
                 )
             })
@@ -2044,14 +2377,20 @@ impl TerrorLinkApp {
                         .border_1()
                         .border_color(t.border_strong)
                         .child(icon(Icon::Paperclip, 12., t.accent_strong))
-                        .child(div().flex_1().min_w(px(0.)).truncate().text_size(px(11.5)).child(name))
                         .child(
-                            small_button("remove-attachment", "Remove", Some(Icon::Close), true).on_click(
-                                cx.listener(|this, _: &ClickEvent, _, cx| {
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .truncate()
+                                .text_size(px(11.5))
+                                .child(name),
+                        )
+                        .child(
+                            small_button("remove-attachment", "Remove", Some(Icon::Close), true)
+                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                                     this.pending_attachment = None;
                                     cx.notify();
-                                }),
-                            ),
+                                })),
                         ),
                 )
             })
@@ -2065,8 +2404,14 @@ impl TerrorLinkApp {
                     .bg(t.surface)
                     .border_1()
                     .border_color(if focused { t.accent } else { t.border })
-                    .shadow(if focused { theme::focus_ring() } else { shadow_sm() })
-                    .on_action(cx.listener(|this, _: &Submit, window, cx| this.send_input(window, cx)))
+                    .shadow(if focused {
+                        theme::focus_ring()
+                    } else {
+                        shadow_sm()
+                    })
+                    .on_action(
+                        cx.listener(|this, _: &Submit, window, cx| this.send_input(window, cx)),
+                    )
                     .child(
                         icon_button("attach", Icon::Paperclip, false, false).on_click(cx.listener(
                             |this, event: &ClickEvent, window, cx| {
@@ -2078,7 +2423,12 @@ impl TerrorLinkApp {
                             },
                         )),
                     )
-                    .child(div().flex_1().min_w(px(0.)).child(self.inputs.composer.clone()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .child(self.inputs.composer.clone()),
+                    )
                     .child(
                         div()
                             .id("send")
@@ -2103,8 +2453,14 @@ impl TerrorLinkApp {
                                 }
                             })
                             .active(|s| s.opacity(0.8))
-                            .child(icon(Icon::Send, 15., if enabled { t.on_primary } else { t.text_faint }))
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.send_input(window, cx))),
+                            .child(icon(
+                                Icon::Send,
+                                15.,
+                                if enabled { t.on_primary } else { t.text_faint },
+                            ))
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                this.send_input(window, cx)
+                            })),
                     ),
             )
     }
@@ -2115,11 +2471,27 @@ impl TerrorLinkApp {
         let width = (f32::from(viewport.width) - 24.0).min(460.0);
         let height = (f32::from(viewport.height) - 24.0).min(560.0);
         let (title, subtitle, badge) = match self.page {
-            Page::Host => ("Host a room", "Share a temporary invite link from this PC", Icon::Broadcast),
-            Page::Notes => ("Temporary Notes", "Kept until you quit TerrorLink", Icon::Notes),
+            Page::Host => (
+                "Host a room",
+                "Share a temporary invite link from this PC",
+                Icon::Broadcast,
+            ),
+            Page::Notes => (
+                "Temporary Notes",
+                "Kept until you quit TerrorLink",
+                Icon::Notes,
+            ),
             Page::Changelog => ("Changelog", "What's new in TerrorLink", Icon::Refresh),
-            Page::Gifs => ("GIFs", "Powered by GIPHY · click one to send it", Icon::Paperclip),
-            _ => ("Settings", "Hotkeys, macros and app behaviour", Icon::Settings),
+            Page::Gifs => (
+                "GIFs",
+                "Powered by GIPHY · click one to send it",
+                Icon::Paperclip,
+            ),
+            _ => (
+                "Settings",
+                "Hotkeys, macros and app behaviour",
+                Icon::Settings,
+            ),
         };
         let content: AnyElement = match self.page {
             Page::Host => self.render_host(cx).into_any_element(),
@@ -2132,7 +2504,12 @@ impl TerrorLinkApp {
                     None => d.text_color(t.text_faint).child("Loading release notes…"),
                     Some(Err(error)) => d.text_color(t.text_faint).child(error.clone()),
                     Some(Ok((title, body))) => d
-                        .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child(title.clone()))
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(title.clone()),
+                        )
                         .child(div().my(px(6.)).h(px(1.)).bg(t.divider))
                         .child(crate::ui::markdown::render(body, t.surface_active)),
                 })
@@ -2198,11 +2575,20 @@ impl TerrorLinkApp {
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .child(title),
                                     )
-                                    .child(div().text_size(px(11.)).text_color(t.text_faint).child(subtitle)),
+                                    .child(
+                                        div()
+                                            .text_size(px(11.))
+                                            .text_color(t.text_faint)
+                                            .child(subtitle),
+                                    ),
                             )
-                            .child(icon_button("modal-close", Icon::Close, false, false).on_click(
-                                cx.listener(|this, _: &ClickEvent, _, cx| this.set_page(Page::Chat, cx)),
-                            )),
+                            .child(
+                                icon_button("modal-close", Icon::Close, false, false).on_click(
+                                    cx.listener(|this, _: &ClickEvent, _, cx| {
+                                        this.set_page(Page::Chat, cx)
+                                    }),
+                                ),
+                            ),
                     )
                     .child(
                         div()
@@ -2221,25 +2607,31 @@ impl TerrorLinkApp {
     fn render_host(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme();
         let hosting = self.hosting;
-        let waiting = hosting && self.invite.is_empty() && self.download.is_none() && self.host_error.is_none();
+        let waiting = hosting
+            && self.invite.is_empty()
+            && self.download.is_none()
+            && self.host_error.is_none();
         let status_card = card()
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap(px(10.))
-                    .child(status_dot(if hosting { t.success } else { t.text_faint }, hosting))
+                    .child(status_dot(
+                        if hosting { t.success } else { t.text_faint },
+                        hosting,
+                    ))
                     .child(
                         div()
                             .flex()
                             .flex_col()
                             .flex_1()
                             .min_w(px(0.))
-                            .child(
-                                div()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(if hosting { "Hosting" } else { "Not hosting" }),
-                            )
+                            .child(div().font_weight(FontWeight::SEMIBOLD).child(if hosting {
+                                "Hosting"
+                            } else {
+                                "Not hosting"
+                            }))
                             .child(
                                 div()
                                     .truncate()
@@ -2252,8 +2644,13 @@ impl TerrorLinkApp {
                         button("host-toggle", "Stop", ButtonKind::Danger, None)
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.stop_host(cx)))
                     } else {
-                        button("host-toggle", "Start hosting", ButtonKind::Primary, Some(Icon::Broadcast))
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.start_host(cx)))
+                        button(
+                            "host-toggle",
+                            "Start hosting",
+                            ButtonKind::Primary,
+                            Some(Icon::Broadcast),
+                        )
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.start_host(cx)))
                     }),
             )
             .when_some(self.host_error.clone(), |d, error| {
@@ -2287,12 +2684,9 @@ impl TerrorLinkApp {
                 )
             })
             .when(waiting, |d| {
-                d.child(
-                    div()
-                        .text_size(px(11.))
-                        .text_color(t.text_faint)
-                        .child("Opening a Cloudflare tunnel. The invite link appears here in a few seconds."),
-                )
+                d.child(div().text_size(px(11.)).text_color(t.text_faint).child(
+                    "Opening a Cloudflare tunnel. The invite link appears here in a few seconds.",
+                ))
             })
             .when(!self.invite.is_empty(), |d| {
                 let invite = self.invite.clone();
@@ -2325,16 +2719,30 @@ impl TerrorLinkApp {
                                 .flex()
                                 .gap(px(6.))
                                 .child(
-                                    button("copy-invite", "Copy link", ButtonKind::Primary, Some(Icon::Copy))
-                                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                    button(
+                                        "copy-invite",
+                                        "Copy link",
+                                        ButtonKind::Primary,
+                                        Some(Icon::Copy),
+                                    )
+                                    .on_click(cx.listener(
+                                        move |this, _: &ClickEvent, _, cx| {
                                             this.copy_text(&invite, cx)
-                                        })),
+                                        },
+                                    )),
                                 )
                                 .child(
-                                    button("join-local", "Join my room", ButtonKind::Secondary, None)
-                                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                    button(
+                                        "join-local",
+                                        "Join my room",
+                                        ButtonKind::Secondary,
+                                        None,
+                                    )
+                                    .on_click(cx.listener(
+                                        |this, _: &ClickEvent, window, cx| {
                                             this.join_local(window, cx)
-                                        })),
+                                        },
+                                    )),
                                 ),
                         ),
                 )
@@ -2344,10 +2752,15 @@ impl TerrorLinkApp {
         let room_card = card()
             .gap(px(2.))
             .child(
-                toggle_row("allow-embeds", "Embeds", Some("Let links show previews"), settings.allow_embeds)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.set_room_setting(|s| s.allow_embeds = !s.allow_embeds, cx)
-                    })),
+                toggle_row(
+                    "allow-embeds",
+                    "Embeds",
+                    Some("Let links show previews"),
+                    settings.allow_embeds,
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.set_room_setting(|s| s.allow_embeds = !s.allow_embeds, cx)
+                })),
             )
             .child(
                 toggle_row(
@@ -2361,10 +2774,15 @@ impl TerrorLinkApp {
                 })),
             )
             .child(
-                toggle_row("chat-filter", "Profanity filter", Some("Mask common swear words"), settings.chat_filter)
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.set_room_setting(|s| s.chat_filter = !s.chat_filter, cx)
-                    })),
+                toggle_row(
+                    "chat-filter",
+                    "Profanity filter",
+                    Some("Mask common swear words"),
+                    settings.chat_filter,
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.set_room_setting(|s| s.chat_filter = !s.chat_filter, cx)
+                })),
             )
             .child(
                 div()
@@ -2373,10 +2791,17 @@ impl TerrorLinkApp {
                     .gap(px(6.))
                     .pt(px(6.))
                     .on_action(cx.listener(|this, _: &Submit, _, cx| this.send_broadcast(cx)))
-                    .child(div().flex_1().min_w(px(0.)).child(self.inputs.broadcast.clone()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .child(self.inputs.broadcast.clone()),
+                    )
                     .child(
                         button("broadcast", "Send", ButtonKind::Secondary, Some(Icon::Send))
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.send_broadcast(cx))),
+                            .on_click(
+                                cx.listener(|this, _: &ClickEvent, _, cx| this.send_broadcast(cx)),
+                            ),
                     ),
             );
 
@@ -2387,7 +2812,11 @@ impl TerrorLinkApp {
                     div()
                         .text_size(px(11.5))
                         .text_color(t.text_faint)
-                        .child(if hosting { "Nobody has joined yet" } else { "Start hosting to see who joins" }),
+                        .child(if hosting {
+                            "Nobody has joined yet"
+                        } else {
+                            "Start hosting to see who joins"
+                        }),
                 )
             } else {
                 d.children(self.host_users.iter().enumerate().map(|(i, name)| {
@@ -2400,19 +2829,27 @@ impl TerrorLinkApp {
                         .child(avatar(name, 22.))
                         .child(div().flex_1().min_w(px(0.)).truncate().child(name.clone()))
                         .child(
-                            small_button(SharedString::from(format!("kick-{i}")), "Kick", None, true)
-                                .on_click(move |_, _, _| {
-                                    if let Some(server) = &server {
-                                        server.kick(&kick_name);
-                                    }
-                                }),
+                            small_button(
+                                SharedString::from(format!("kick-{i}")),
+                                "Kick",
+                                None,
+                                true,
+                            )
+                            .on_click(move |_, _, _| {
+                                if let Some(server) = &server {
+                                    server.kick(&kick_name);
+                                }
+                            }),
                         )
                 }))
             }
         });
 
         let log_lines: Vec<AnyElement> = if self.logs.is_empty() {
-            vec![div().text_color(t.text_faint).child("No log entries").into_any_element()]
+            vec![div()
+                .text_color(t.text_faint)
+                .child("No log entries")
+                .into_any_element()]
         } else {
             self.logs
                 .iter()
@@ -2426,7 +2863,10 @@ impl TerrorLinkApp {
                     } else {
                         t.text_muted
                     };
-                    div().text_color(color).child(line.clone()).into_any_element()
+                    div()
+                        .text_color(color)
+                        .child(line.clone())
+                        .into_any_element()
                 })
                 .collect()
         };
@@ -2451,18 +2891,24 @@ impl TerrorLinkApp {
                             .flex()
                             .gap(px(4.))
                             .child(
-                                small_button("update-cloudflared", "Update cloudflared", Some(Icon::Refresh), false)
-                                    .on_click(cx.listener(|this, _: &ClickEvent, _, _| {
+                                small_button(
+                                    "update-cloudflared",
+                                    "Update cloudflared",
+                                    Some(Icon::Refresh),
+                                    false,
+                                )
+                                .on_click(cx.listener(
+                                    |this, _: &ClickEvent, _, _| {
                                         tunnel::check_update(&this.runtime, this.host_tx.clone())
-                                    })),
-                            )
-                            .child(
-                                small_button("clear-log", "Clear", Some(Icon::Trash), false).on_click(cx.listener(
-                                    |this, _: &ClickEvent, _, cx| {
-                                        this.logs.clear();
-                                        cx.notify();
                                     },
                                 )),
+                            )
+                            .child(
+                                small_button("clear-log", "Clear", Some(Icon::Trash), false)
+                                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                        this.logs.clear();
+                                        cx.notify();
+                                    })),
                             ),
                     ),
             )
@@ -2494,18 +2940,23 @@ impl TerrorLinkApp {
             .on_action(cx.listener(|this, _: &Submit, _, cx| this.search_gifs(cx)))
             .child(self.inputs.gif_search.clone())
             .when_some(self.gif_status.clone(), |d, status| {
-                d.child(div().text_size(px(11.5)).text_color(t.text_faint).child(status))
+                d.child(
+                    div()
+                        .text_size(px(11.5))
+                        .text_color(t.text_faint)
+                        .child(status),
+                )
             })
             .child(
                 div()
-                    .flex()
-                    .flex_wrap()
+                    .grid()
+                    .grid_cols(3)
                     .gap(px(6.))
-                    .children(self.gifs.iter().enumerate().map(|(i, gif)| {
+                    .children(self.gifs.iter().map(|gif| {
                         let url = gif.url.clone();
                         div()
-                            .id(("gif", i))
-                            .w(px(136.))
+                            .id(SharedString::from(url.clone()))
+                            .w_full()
                             .h(px(100.))
                             .rounded(px(8.))
                             .overflow_hidden()
@@ -2514,7 +2965,12 @@ impl TerrorLinkApp {
                             .border_color(t.border)
                             .cursor_pointer()
                             .hover(|s| s.border_color(t.accent))
-                            .child(img(gif.preview.clone()).size_full().object_fit(ObjectFit::Cover))
+                            .child(
+                                img(gif.preview.clone())
+                                    .id("img")
+                                    .size_full()
+                                    .object_fit(ObjectFit::Cover),
+                            )
                             .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                                 this.send_gif(url.clone(), window, cx)
                             }))
@@ -2527,7 +2983,6 @@ impl TerrorLinkApp {
     }
 
     fn opacity_row(
-        &self,
         id: &'static str,
         label: &'static str,
         hint: &'static str,
@@ -2549,41 +3004,67 @@ impl TerrorLinkApp {
                     .flex_1()
                     .min_w(px(0.))
                     .child(div().text_size(px(12.)).child(label))
-                    .child(div().text_size(px(10.5)).text_color(t.text_faint).child(hint)),
+                    .child(
+                        div()
+                            .text_size(px(10.5))
+                            .text_color(t.text_faint)
+                            .child(hint),
+                    ),
             )
             .children(levels.iter().copied().map(|level| {
                 let percent = (level * 100.0).round() as u32;
                 let selected = (current - level).abs() < 0.01;
-                small_button(SharedString::from(format!("{id}-{percent}")), format!("{percent}%"), None, false)
-                    .when(selected, |d| d.bg(t.accent_soft).border_color(t.accent).text_color(t.accent_strong))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        set(&mut this.config, level);
-                        this.config.save();
-                        cx.notify();
-                    }))
+                small_button(
+                    SharedString::from(format!("{id}-{percent}")),
+                    format!("{percent}%"),
+                    None,
+                    false,
+                )
+                .when(selected, |d| {
+                    d.bg(t.accent_soft)
+                        .border_color(t.accent)
+                        .text_color(t.accent_strong)
+                })
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    set(&mut this.config, level);
+                    this.config.save();
+                    cx.notify();
+                }))
             }))
     }
 
     fn render_settings(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = theme();
-        let hotkeys = card().gap(px(4.)).children(HOTKEY_LABELS.iter().enumerate().map(|(i, (label, hint))| {
-            div()
-                .flex()
-                .items_center()
-                .gap(px(10.))
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .child(div().text_size(px(12.)).child(*label))
-                        .when(!hint.is_empty(), |d| {
-                            d.child(div().text_size(px(10.5)).text_color(t.text_faint).child(*hint))
-                        }),
-                )
-                .child(div().w(px(150.)).flex_none().child(self.inputs.hotkeys[i].clone()))
-        }));
+        let hotkeys = card()
+            .gap(px(4.))
+            .children(HOTKEY_LABELS.iter().enumerate().map(|(i, (label, hint))| {
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .child(div().text_size(px(12.)).child(*label))
+                            .when(!hint.is_empty(), |d| {
+                                d.child(
+                                    div()
+                                        .text_size(px(10.5))
+                                        .text_color(t.text_faint)
+                                        .child(*hint),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .w(px(150.))
+                            .flex_none()
+                            .child(self.inputs.hotkeys[i].clone()),
+                    )
+            }));
 
         let macros = card()
             .gap(px(5.))
@@ -2611,8 +3092,18 @@ impl TerrorLinkApp {
                     .flex()
                     .items_center()
                     .gap(px(6.))
-                    .child(div().w(px(84.)).flex_none().child(self.inputs.macro_keys[i].clone()))
-                    .child(div().flex_1().min_w(px(0.)).child(self.inputs.macro_texts[i].clone()))
+                    .child(
+                        div()
+                            .w(px(84.))
+                            .flex_none()
+                            .child(self.inputs.macro_keys[i].clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .child(self.inputs.macro_texts[i].clone()),
+                    )
             }));
 
         let config = &self.config;
@@ -2652,7 +3143,7 @@ impl TerrorLinkApp {
                     cx.notify();
                 })),
             )
-            .child(self.opacity_row(
+            .child(Self::opacity_row(
                 "window-opacity",
                 "Window opacity",
                 "Lower it to see what's behind the window",
@@ -2661,7 +3152,7 @@ impl TerrorLinkApp {
                 |config, level| config.opacity = level,
                 cx,
             ))
-            .child(self.opacity_row(
+            .child(Self::opacity_row(
                 "chat-opacity",
                 "Chat background",
                 "Opacity of the message area behind the bubbles",
@@ -2670,7 +3161,7 @@ impl TerrorLinkApp {
                 |config, level| config.chat_opacity = level,
                 cx,
             ))
-            .child(self.opacity_row(
+            .child(Self::opacity_row(
                 "bubble-opacity",
                 "Message bubbles",
                 "Opacity of the message bubbles themselves",
@@ -2737,22 +3228,25 @@ impl TerrorLinkApp {
                         .flex_1()
                         .min_w(px(0.))
                         .child(div().text_size(px(12.)).child("cloudflared"))
-                        .child(
-                            div()
-                                .text_size(px(10.5))
-                                .text_color(t.text_faint)
-                                .child(match &self.cloudflared {
-                                    Some(version) => format!("Installed: {version}"),
-                                    None => "Downloaded automatically the first time you host".to_string(),
-                                }),
-                        ),
+                        .child(div().text_size(px(10.5)).text_color(t.text_faint).child(
+                            match &self.cloudflared {
+                                Some(version) => format!("Installed: {version}"),
+                                None => {
+                                    "Downloaded automatically the first time you host".to_string()
+                                }
+                            },
+                        )),
                 )
                 .child(
-                    small_button("check-updates", "Check for updates", Some(Icon::Refresh), false).on_click(
-                        cx.listener(|this, _: &ClickEvent, _, _| {
-                            tunnel::check_update(&this.runtime, this.host_tx.clone())
-                        }),
-                    ),
+                    small_button(
+                        "check-updates",
+                        "Check for updates",
+                        Some(Icon::Refresh),
+                        false,
+                    )
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, _| {
+                        tunnel::check_update(&this.runtime, this.host_tx.clone())
+                    })),
                 ),
         );
 
@@ -2761,7 +3255,9 @@ impl TerrorLinkApp {
                 .flex()
                 .items_center()
                 .gap(px(10.))
-                .when_some(self.logo.clone(), |d, logo| d.child(img(logo).size(px(28.)).rounded(px(7.))))
+                .when_some(self.logo.clone(), |d, logo| {
+                    d.child(img(logo).size(px(28.)).rounded(px(7.)))
+                })
                 .child(
                     div()
                         .flex()
@@ -2778,16 +3274,21 @@ impl TerrorLinkApp {
                                 .truncate()
                                 .text_size(px(10.5))
                                 .text_color(t.text_faint)
-                                .child(format!("GPL-3.0-or-later · Logs: {}", config::log_path().display())),
+                                .child(format!(
+                                    "GPL-3.0-or-later · Logs: {}",
+                                    config::log_path().display()
+                                )),
                         ),
                 )
                 .child(
-                    small_button("changelog", "Changelog", None, false)
-                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.open_changelog(cx))),
+                    small_button("changelog", "Changelog", None, false).on_click(
+                        cx.listener(|this, _: &ClickEvent, _, cx| this.open_changelog(cx)),
+                    ),
                 )
                 .child(
-                    small_button("project-page", "Project page", None, false)
-                        .on_click(|_, _, cx| cx.open_url("https://github.com/TeutonicTerrror/TerrorLink")),
+                    small_button("project-page", "Project page", None, false).on_click(
+                        |_, _, cx| cx.open_url("https://github.com/TeutonicTerrror/TerrorLink"),
+                    ),
                 ),
         );
 
@@ -2809,12 +3310,20 @@ impl TerrorLinkApp {
                     .gap(px(6.))
                     .pt(px(4.))
                     .child(
-                        button("save-settings", "Save changes", ButtonKind::Primary, Some(Icon::Check))
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.save_settings(cx))),
+                        button(
+                            "save-settings",
+                            "Save changes",
+                            ButtonKind::Primary,
+                            Some(Icon::Check),
+                        )
+                        .on_click(
+                            cx.listener(|this, _: &ClickEvent, _, cx| this.save_settings(cx)),
+                        ),
                     )
                     .child(
-                        button("quit", "Quit TerrorLink", ButtonKind::Ghost, None)
-                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.quit(window, cx))),
+                        button("quit", "Quit TerrorLink", ButtonKind::Ghost, None).on_click(
+                            cx.listener(|this, _: &ClickEvent, window, cx| this.quit(window, cx)),
+                        ),
                     )
                     .when_some(self.settings_note.clone(), |d, note| {
                         d.child(
@@ -2852,7 +3361,9 @@ impl TerrorLinkApp {
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .when_some(self.logo.clone(), |d, logo| d.child(img(logo).size(px(20.)).rounded(px(5.))))
+                    .when_some(self.logo.clone(), |d, logo| {
+                        d.child(img(logo).size(px(20.)).rounded(px(5.)))
+                    })
                     .child(div().font_weight(FontWeight::SEMIBOLD).child("TerrorLink"))
                     .child(
                         div()
@@ -2867,12 +3378,13 @@ impl TerrorLinkApp {
                             .child("OVERLAY"),
                     )
                     .child(div().flex_1())
-                    .child(
-                        div()
-                            .text_size(px(11.))
-                            .text_color(t.text_faint)
-                            .child(if self.status.connected() { self.room_label() } else { "Not connected".into() }),
-                    ),
+                    .child(div().text_size(px(11.)).text_color(t.text_faint).child(
+                        if self.status.connected() {
+                            self.room_label()
+                        } else {
+                            "Not connected".into()
+                        },
+                    )),
             )
             .child(
                 div()
@@ -2946,6 +3458,7 @@ fn render_image_viewer(
         }))
         .child(
             img(image)
+                .id("img")
                 .w(px(width * scale))
                 .h(px(height * scale))
                 .rounded(px(10.))
@@ -3002,7 +3515,11 @@ fn kofi_logo() -> Arc<Image> {
 const GIPHY_KEY: &str = "wilSMsUOT0wMPTB7koMsFvrehaAwdDFw";
 
 async fn fetch_gifs(query: String) -> Result<Vec<(Vec<u8>, String)>, String> {
-    let endpoint = if query.is_empty() { "trending" } else { "search" };
+    let endpoint = if query.is_empty() {
+        "trending"
+    } else {
+        "search"
+    };
     let mut url = url::Url::parse(&format!("https://api.giphy.com/v1/gifs/{endpoint}"))
         .map_err(|_| "Could not build the GIPHY request.".to_string())?;
     url.query_pairs_mut()
@@ -3012,7 +3529,7 @@ async fn fetch_gifs(query: String) -> Result<Vec<(Vec<u8>, String)>, String> {
     if !query.is_empty() {
         url.query_pairs_mut().append_pair("q", &query);
     }
-    let client = reqwest::Client::new();
+    let client = giphy_client();
     let response = client
         .get(url)
         .timeout(Duration::from_secs(10))
@@ -3020,7 +3537,10 @@ async fn fetch_gifs(query: String) -> Result<Vec<(Vec<u8>, String)>, String> {
         .await
         .map_err(|_| "Could not reach GIPHY. Check your connection.".to_string())?;
     if !response.status().is_success() {
-        return Err(format!("GIPHY returned an error ({}).", response.status().as_u16()));
+        return Err(format!(
+            "GIPHY returned an error ({}).",
+            response.status().as_u16()
+        ));
     }
     let body: serde_json::Value = response
         .json()
@@ -3030,7 +3550,12 @@ async fn fetch_gifs(query: String) -> Result<Vec<(Vec<u8>, String)>, String> {
     let previews = futures_util::future::join_all(picks.iter().map(|(preview, _)| {
         let client = client.clone();
         async move {
-            let response = client.get(preview).timeout(Duration::from_secs(10)).send().await.ok()?;
+            let response = client
+                .get(preview)
+                .timeout(Duration::from_secs(10))
+                .send()
+                .await
+                .ok()?;
             let bytes = response.error_for_status().ok()?.bytes().await.ok()?;
             (bytes.len() <= 4 * 1024 * 1024).then(|| bytes.to_vec())
         }
@@ -3044,7 +3569,8 @@ async fn fetch_gifs(query: String) -> Result<Vec<(Vec<u8>, String)>, String> {
 }
 
 fn gif_urls(body: &serde_json::Value) -> Vec<(String, String)> {
-    let url = |images: &serde_json::Value, name: &str| images[name]["url"].as_str().map(str::to_string);
+    let url =
+        |images: &serde_json::Value, name: &str| images[name]["url"].as_str().map(str::to_string);
     body["data"]
         .as_array()
         .map(|items| {
@@ -3052,7 +3578,8 @@ fn gif_urls(body: &serde_json::Value) -> Vec<(String, String)> {
                 .iter()
                 .filter_map(|item| {
                     let images = &item["images"];
-                    let preview = url(images, "fixed_height_small").or_else(|| url(images, "fixed_height"))?;
+                    let preview = url(images, "fixed_height_small")
+                        .or_else(|| url(images, "fixed_height"))?;
                     let full = url(images, "downsized").or_else(|| url(images, "original"))?;
                     Some((preview, full))
                 })
@@ -3061,8 +3588,20 @@ fn gif_urls(body: &serde_json::Value) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
+fn giphy_client() -> reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .user_agent(format!("TerrorLink/{}", env!("CARGO_PKG_VERSION")))
+                .build()
+                .unwrap_or_default()
+        })
+        .clone()
+}
+
 async fn download_gif(url: String) -> Result<Vec<u8>, String> {
-    let bytes = reqwest::Client::new()
+    let bytes = giphy_client()
         .get(url)
         .timeout(Duration::from_secs(30))
         .send()
@@ -3077,7 +3616,8 @@ async fn download_gif(url: String) -> Result<Vec<u8>, String> {
 
 async fn fetch_release_notes() -> Result<(String, String), String> {
     let version = env!("CARGO_PKG_VERSION");
-    let url = format!("https://api.github.com/repos/TeutonicTerrror/TerrorLink/releases/tags/{version}");
+    let url =
+        format!("https://api.github.com/repos/TeutonicTerrror/TerrorLink/releases/tags/{version}");
     let response = reqwest::Client::new()
         .get(url)
         .header("User-Agent", format!("TerrorLink/{version}"))
@@ -3090,16 +3630,32 @@ async fn fetch_release_notes() -> Result<(String, String), String> {
         return Err(format!("No release notes for v{version} yet."));
     }
     if !response.status().is_success() {
-        return Err(format!("GitHub returned an error ({}).", response.status().as_u16()));
+        return Err(format!(
+            "GitHub returned an error ({}).",
+            response.status().as_u16()
+        ));
     }
     let release: serde_json::Value = response
         .json()
         .await
         .map_err(|_| "GitHub sent release notes TerrorLink could not read.".to_string())?;
-    let name = release["name"].as_str().filter(|n| !n.is_empty()).unwrap_or(version);
-    let date = release["published_at"].as_str().and_then(|d| d.get(..10)).unwrap_or_default();
-    let title = if date.is_empty() { format!("v{name}") } else { format!("v{name} · {date}") };
-    let body = release["body"].as_str().unwrap_or("No release notes available.").replace("\r\n", "\n");
+    let name = release["name"]
+        .as_str()
+        .filter(|n| !n.is_empty())
+        .unwrap_or(version);
+    let date = release["published_at"]
+        .as_str()
+        .and_then(|d| d.get(..10))
+        .unwrap_or_default();
+    let title = if date.is_empty() {
+        format!("v{name}")
+    } else {
+        format!("v{name} · {date}")
+    };
+    let body = release["body"]
+        .as_str()
+        .unwrap_or("No release notes available.")
+        .replace("\r\n", "\n");
     Ok((title, body))
 }
 
@@ -3110,6 +3666,60 @@ fn format_time(ts: i64) -> String {
         .single()
         .map(|time| time.format("%H:%M").to_string())
         .unwrap_or_default()
+}
+
+fn is_video(name: &str) -> bool {
+    let extension = name
+        .rsplit_once('.')
+        .map(|(_, e)| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    matches!(
+        extension.as_str(),
+        "mp4" | "m4v" | "mov" | "webm" | "mkv" | "avi" | "wmv"
+    )
+}
+
+fn write_attachment(attachment: &Attachment, directory: PathBuf) -> Result<PathBuf, String> {
+    let (_, payload) = attachment
+        .data
+        .as_ref()
+        .and_then(|data| data.split_once(','))
+        .ok_or("Could not decode attachment")?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(payload.trim())
+        .map_err(|_| "Could not decode attachment")?;
+    let name = attachment
+        .name
+        .clone()
+        .unwrap_or_else(|| "attachment.bin".into());
+    let safe: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ' ') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let safe = if safe.trim().is_empty() {
+        "attachment.bin".to_string()
+    } else {
+        safe
+    };
+    let path = directory.join(safe);
+    std::fs::create_dir_all(&directory)
+        .and_then(|_| std::fs::write(&path, &bytes))
+        .map_err(|error| format!("Save failed: {error}"))?;
+    Ok(path)
+}
+
+fn image_too_big(width: u32, height: u32) -> bool {
+    width == 0
+        || height == 0
+        || width > 8000
+        || height > 8000
+        || width as u64 * height as u64 > 40_000_000
 }
 
 fn decode_image(attachment: &Attachment) -> Option<CachedImage> {
@@ -3127,13 +3737,15 @@ fn decode_image(attachment: &Attachment) -> Option<CachedImage> {
     } else {
         return None;
     };
-    let bytes = base64::engine::general_purpose::STANDARD.decode(payload.trim()).ok()?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(payload.trim())
+        .ok()?;
     let (width, height) = image::ImageReader::new(std::io::Cursor::new(&bytes))
         .with_guessed_format()
         .ok()?
         .into_dimensions()
         .ok()?;
-    if width == 0 || height == 0 {
+    if image_too_big(width, height) {
         return None;
     }
     Some(CachedImage {
@@ -3167,8 +3779,9 @@ fn binding_matches(binding: &str, vk: u32, ctrl: bool, shift: bool, alt: bool) -
     if need != (ctrl, shift, alt) {
         return false;
     }
-    if key.chars().count() == 1 {
-        let wanted = key.chars().next().unwrap().to_ascii_lowercase();
+    let mut chars = key.chars();
+    if let (Some(first), None) = (chars.next(), chars.next()) {
+        let wanted = first.to_ascii_lowercase();
         return vk_char(vk)
             .map(|found| found.to_ascii_lowercase() == wanted)
             .unwrap_or(false);
@@ -3260,6 +3873,22 @@ fn shift_char(base: char) -> char {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn oversized_images_are_rejected() {
+        assert!(!super::image_too_big(1920, 1080));
+        assert!(super::image_too_big(0, 10));
+        assert!(super::image_too_big(40000, 40000));
+        assert!(super::image_too_big(7000, 7000));
+        assert!(super::image_too_big(u32::MAX, u32::MAX));
+    }
+
+    #[test]
+    fn only_video_extensions_are_playable() {
+        assert!(super::is_video("clip.MP4"));
+        assert!(!super::is_video("clip.mp4.exe"));
+        assert!(!super::is_video("mp4"));
+    }
+
+    #[test]
     fn gif_urls_reads_giphy_shape() {
         let body = serde_json::json!({"data": [
             {"images": {
@@ -3276,8 +3905,14 @@ mod tests {
         assert_eq!(
             super::gif_urls(&body),
             vec![
-                ("https://x/small.gif".to_string(), "https://x/down.gif".to_string()),
-                ("https://x/fixed.gif".to_string(), "https://x/orig2.gif".to_string()),
+                (
+                    "https://x/small.gif".to_string(),
+                    "https://x/down.gif".to_string()
+                ),
+                (
+                    "https://x/fixed.gif".to_string(),
+                    "https://x/orig2.gif".to_string()
+                ),
             ]
         );
     }

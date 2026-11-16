@@ -53,8 +53,21 @@ fn parse(src: &str) -> (String, Vec<(Range<usize>, Mark)>) {
 fn match_at(rest: &str) -> Option<(usize, Mark, &str)> {
     MARKERS.into_iter().find_map(|(marker, mark)| {
         let after = rest.strip_prefix(marker)?;
-        let inner = &after[..after.find(marker)?];
-        (!inner.is_empty() && (mark == Mark::Code || inner.trim() == inner)).then_some((marker.len(), mark, inner))
+        let mut end = after.find(marker)?;
+        let c = &marker[..1];
+        if mark != Mark::Code
+            && marker.len() == 2
+            && after[end + 2..].starts_with(c)
+            && !after[end + 3..].starts_with(c)
+        {
+            end += 1;
+        }
+        let inner = &after[..end];
+        (!inner.is_empty() && (mark == Mark::Code || inner.trim() == inner)).then_some((
+            marker.len(),
+            mark,
+            inner,
+        ))
     })
 }
 
@@ -80,7 +93,9 @@ fn inline(src: &str, out: &mut String, marks: &mut Vec<(Range<usize>, Mark)>) {
             i += len * 2 + inner.len();
             continue;
         }
-        let ch = rest.chars().next().expect("non-empty");
+        let Some(ch) = rest.chars().next() else {
+            break;
+        };
         out.push(ch);
         i += ch.len_utf8();
     }
@@ -114,17 +129,29 @@ pub fn editing_runs(line: &str, base: TextRun, code_bg: Hsla, dim: Hsla) -> Vec<
     cuts.dedup();
     cuts.windows(2)
         .map(|w| {
-            let mut run = TextRun { len: w[1] - w[0], ..base.clone() };
-            for (_, mark) in spans.iter().filter(|(r, _)| r.start <= w[0] && w[1] <= r.end) {
+            let mut run = TextRun {
+                len: w[1] - w[0],
+                ..base.clone()
+            };
+            for (_, mark) in spans
+                .iter()
+                .filter(|(r, _)| r.start <= w[0] && w[1] <= r.end)
+            {
                 match mark {
                     None => run.color = dim,
                     Some(Mark::Bold) => run.font.weight = FontWeight::BOLD,
                     Some(Mark::Italic) => run.font.style = FontStyle::Italic,
                     Some(Mark::Underline) => {
-                        run.underline = Some(UnderlineStyle { thickness: px(1.), ..Default::default() })
+                        run.underline = Some(UnderlineStyle {
+                            thickness: px(1.),
+                            ..Default::default()
+                        })
                     }
                     Some(Mark::Strike) => {
-                        run.strikethrough = Some(StrikethroughStyle { thickness: px(1.), ..Default::default() })
+                        run.strikethrough = Some(StrikethroughStyle {
+                            thickness: px(1.),
+                            ..Default::default()
+                        })
                     }
                     Some(Mark::Code) => run.background_color = Some(code_bg),
                     Some(Mark::Mention) => {}
@@ -178,7 +205,11 @@ fn is_name_char(c: char) -> bool {
 
 fn mention_len(src: &str, at: usize) -> Option<usize> {
     let rest = src[at..].strip_prefix('@')?;
-    if src[..at].chars().next_back().is_some_and(|c| !c.is_whitespace()) {
+    if src[..at]
+        .chars()
+        .next_back()
+        .is_some_and(|c| !c.is_whitespace())
+    {
         return None;
     }
     let name = rest.find(|c: char| !is_name_char(c)).unwrap_or(rest.len());
@@ -193,8 +224,14 @@ pub fn mentions(text: &str, name: &str) -> bool {
     let text = text.to_lowercase();
     let needle = format!("@{name}");
     text.match_indices(&needle).any(|(at, _)| {
-        let before = text[..at].chars().next_back().is_none_or(char::is_whitespace);
-        let after = text[at + needle.len()..].chars().next().is_none_or(|c| !is_name_char(c));
+        let before = text[..at]
+            .chars()
+            .next_back()
+            .is_none_or(char::is_whitespace);
+        let after = text[at + needle.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| !is_name_char(c));
         before && after
     })
 }
@@ -228,7 +265,16 @@ mod tests {
         let (out, marks) = parse("**b** *i* __u__ ~~s~~ `c`");
         assert_eq!(out, "b i u s c");
         let kinds: Vec<Mark> = marks.iter().map(|(_, m)| *m).collect();
-        assert_eq!(kinds, [Mark::Bold, Mark::Italic, Mark::Underline, Mark::Strike, Mark::Code]);
+        assert_eq!(
+            kinds,
+            [
+                Mark::Bold,
+                Mark::Italic,
+                Mark::Underline,
+                Mark::Strike,
+                Mark::Code
+            ]
+        );
         assert_eq!(parse("2 * 3 * 4").0, "2 * 3 * 4");
         assert_eq!(parse("snake_case_name").0, "snake_case_name");
         assert_eq!(parse("- one\n* two").0, "• one\n• two");
@@ -236,6 +282,15 @@ mod tests {
         let (out, marks) = parse("__under **both**__");
         assert_eq!(out, "under both");
         assert_eq!(marks.len(), 2);
+
+        let (out, marks) = parse("***Hi***");
+        assert_eq!(out, "Hi");
+        assert_eq!(marks, [(0..2, Mark::Italic), (0..2, Mark::Bold)]);
+        let (out, marks) = parse("**bold *both*** and *x*");
+        assert_eq!(out, "bold both and x");
+        assert_eq!(marks.len(), 3);
+        assert_eq!(parse("***").0, "***");
+        assert_eq!(parse("**a** *b*").0, "a b");
 
         let mut spans = Vec::new();
         super::source_spans("**b** x", 0, &mut spans);

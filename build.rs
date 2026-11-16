@@ -8,8 +8,11 @@ fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
     if std::env::var("PROFILE").as_deref() == Ok("release") {
         if let Some(profile_dir) = out_dir.ancestors().nth(3) {
-            let manifest = format!("version: {}
-", std::env::var("CARGO_PKG_VERSION").expect("version"));
+            let manifest = format!(
+                "version: {}
+",
+                std::env::var("CARGO_PKG_VERSION").expect("version")
+            );
             std::fs::write(profile_dir.join("version.yml"), manifest).expect("write version.yml");
         }
     }
