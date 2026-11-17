@@ -6240,7 +6240,7 @@ dependencies = [
  "image",
  "open",
  "parking_lot",
- "rand 0.8.8",
+ "rand 0.10.3",
  "raw-window-handle",
  "reqwest",
  "resvg 0.44.0",
