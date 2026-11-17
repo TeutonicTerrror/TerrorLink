@@ -32,7 +32,7 @@ tiny-skia = "0.11"
 dirs = "5"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 open = "5"
-tray-icon = "0.19"
+tray-icon = "0.26"
 parking_lot = "0.12"
 url = "2"
 anyhow = "1"
