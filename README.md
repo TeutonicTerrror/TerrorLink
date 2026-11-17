@@ -62,6 +62,25 @@ It's one small native app and it sits in your tray, works with global hotkeys an
 | Images | `image`, plus `resvg` for the logo and icon |
 | Windows integration | `windows` crate (keyboard hook, window control, sound) and `tray-icon` |
 
+## Download
+
+Get the latest `terrorlink.exe` from the [Releases page](https://github.com/TeutonicTerrror/TerrorLink/releases/latest). Release notes are in each release. See the [privacy policy](.github/PRIVACY.md) for what the app does on your PC and on the network.
+
+## Code signing policy (taking effect when approved)
+
+TerrorLink has applied for free code signing. Until the application is approved, releases are not signed.
+
+Once approved: free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+
+- Releases are built from this repository by [GitHub Actions](.github/workflows/release.yml) and will then be signed.
+- Every signing request will be approved manually by a maintainer.
+
+| Role | Member |
+| --- | --- |
+| Authors | [TeutonicTerrror](https://github.com/TeutonicTerrror) |
+| Reviewers | [TeutonicTerrror](https://github.com/TeutonicTerrror) |
+| Approvers | [TeutonicTerrror](https://github.com/TeutonicTerrror) |
+
 ## Run it
 
 You need Windows 10 or 11 and a Rust toolchain with the MSVC target.
@@ -74,6 +93,6 @@ For a debug build, use plain `cargo run`.
 
 ## License
 
-TerrorLink is free software under the [GPL-3.0-or-later](LICENSE.md) licence.
+TerrorLink is free software under the [GPL-3.0-or-later](LICENSE) licence.
 
 TerrorLink is made entirely by TeutonicTerror!

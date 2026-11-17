@@ -1,0 +1,73 @@
+name: Release
+
+on:
+  push:
+    tags: ["[0-9]*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check tag matches Cargo.toml and changes.md
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          tag="$GITHUB_REF_NAME"
+          cargo_version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          notes_version=$(head -n1 changes.md | tr -d '\r' | xargs)
+          if [ "$tag" != "$cargo_version" ] || [ "$tag" != "$notes_version" ]; then
+            echo "Tag $tag, Cargo.toml ($cargo_version) and changes.md ($notes_version) must match"
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@1.88
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release
+        run: cargo build --release --locked
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: terrorlink-unsigned
+          path: target/release/terrorlink.exe
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: terrorlink-unsigned
+
+      - name: Write version.yml and release notes
+        shell: bash
+        run: |
+          sha=$(sha256sum terrorlink.exe | cut -d' ' -f1)
+          version=$(head -n1 changes.md | tr -d '\r' | xargs)
+
+          # version.yml is what the in-app updater reads.
+          printf 'version: "%s"\nsha256: %s\n' "$version" "$sha" > version.yml
+
+          # Release notes are changes.md minus its version line and === separators,
+          # with the checksum appended.
+          tail -n +2 changes.md | tr -d '\r' | grep -vE '^===$' > notes.md
+          printf '\nChecksum: `%s`\n' "$sha" >> notes.md
+
+      - name: Create GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" terrorlink.exe version.yml --title "$GITHUB_REF_NAME" --notes-file notes.md

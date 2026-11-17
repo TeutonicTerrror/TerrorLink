@@ -98,9 +98,7 @@ pub async fn check_and_install() -> Result<Option<String>, String> {
     if !bytes.starts_with(b"MZ") {
         return Err("the download is not a Windows program".into());
     }
-    if !manifest.sha256.is_empty()
-        && !hex::encode(Sha256::digest(&bytes)).eq_ignore_ascii_case(&manifest.sha256)
-    {
+    if !hex::encode(Sha256::digest(&bytes)).eq_ignore_ascii_case(&manifest.sha256) {
         return Err("the download failed its SHA-256 check".into());
     }
     let exe = std::env::current_exe().map_err(|error| error.to_string())?;
