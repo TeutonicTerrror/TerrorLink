@@ -2,7 +2,7 @@
 name = "terrorlink"
 version = "2.2.2"
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.89"
 license = "GPL-3.0-or-later"
 description = "Private ephemeral group chat over a Cloudflare Tunnel"
 authors = ["TeutonicTerror"]

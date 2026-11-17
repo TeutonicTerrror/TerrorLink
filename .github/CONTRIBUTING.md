@@ -13,7 +13,7 @@ Thanks for helping out. TerrorLink is free software under the [GPL-3.0-or-later]
 You need:
 
 - Windows 10 or 11.
-- Rust 1.88 or newer, with the MSVC toolchain.
+- Rust 1.89 or newer, with the MSVC toolchain.
 
 ```powershell
 cargo run --release   # build and run
