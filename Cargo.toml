@@ -28,7 +28,7 @@ hex = "0.4"
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 resvg = "0.44"
-tiny-skia = "0.11"
+tiny-skia = "0.12"
 dirs = "5"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 open = "5"
@@ -58,7 +58,7 @@ windows = { version = "0.61", features = [
 
 [build-dependencies]
 resvg = "0.44"
-tiny-skia = "0.11"
+tiny-skia = "0.12"
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
